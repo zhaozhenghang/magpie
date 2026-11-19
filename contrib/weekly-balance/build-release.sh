@@ -22,16 +22,18 @@ while IFS= read -r patch; do patches+=("$patch"); done < <(git rev-list --revers
 
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/magpie-build.XXXXXXXX")
 checkout="$temp_dir/source"
+upstream_ref="refs/weekly-balance/builds/$(basename "$temp_dir")"
 cleanup() {
   git -C "$source_repo" worktree remove --force "$checkout" 2>/dev/null || true
+  git -C "$source_repo" update-ref -d "$upstream_ref"
   rm -rf "$temp_dir"
 }
 trap cleanup EXIT
 tag="v$upstream"
 official=https://github.com/yetone/magpie.git
-git fetch --no-tags --depth=1 "$official" "refs/tags/$tag"
-upstream_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
-git worktree add --detach "$checkout" "$upstream_commit"
+git fetch --no-tags --no-write-fetch-head --depth=1 "$official" "refs/tags/$tag:$upstream_ref"
+upstream_commit=$(git rev-parse "$upstream_ref^{commit}")
+git worktree add -q --detach "$checkout" "$upstream_commit"
 git -C "$checkout" -c user.name='Magpie Weekly Balance' -c user.email='magpie-weekly-balance@users.noreply.github.com' \
   cherry-pick "${patches[@]}"
 cd "$checkout"
