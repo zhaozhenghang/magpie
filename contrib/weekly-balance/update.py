@@ -218,6 +218,7 @@ def rollback(root, address, previous):
     restart(root, address, current, old)
     wait_for_version(root, address, old, timeout=660)
     check_plugin(root)
+    (root / "failed-version").write_text(current + "\n")
     print(f"Restored {old}")
 
 
