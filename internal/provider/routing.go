@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -374,6 +375,10 @@ type Limit struct {
 	matches    func(string) bool
 	partial    bool   // of a reading that may leave windows out (QuotaWindow.partial)
 	Name       string // QuotaWindow.Name: which window it is, one reading to the next (WindowCapID)
+	// readAt and resetAfter retain the card's sample time and relative reset
+	// for strategies that need the reading as it was made.
+	readAt     time.Time
+	resetAfter time.Duration
 	// pool is the windows of the pool a model's own window draws on
 	// (Antigravity's "Gemini · 7 days"), which hold the account at its
 	// caps only (capLimits): routing goes on by the model's own window
@@ -477,6 +482,41 @@ func restarted(renews, restart time.Time) time.Time {
 
 func (l Limit) applies(model string) bool {
 	return (l.Model == "" || strings.Contains(model, l.Model)) && (l.matches == nil || l.matches(model))
+}
+
+// RoutingQuotaWindow is one dated allowance reading given to a strategy.
+// Times are Unix milliseconds, with no reset timestamp when it is unknown.
+type RoutingQuotaWindow struct {
+	SpanMS      int64   `json:"spanMs"`
+	Used        float64 `json:"used"` // percent, 0–100
+	ResetsAt    int64   `json:"resetsAt,omitempty"`
+	ReadAt      int64   `json:"readAt"`
+	ModelScoped bool    `json:"modelScoped,omitempty"`
+}
+
+// QuotaWindows gives the model's dated windows without advancing resets or
+// calculating a new share. A wallet balance has no reported percentage.
+func (a Allowance) QuotaWindows(model string) []RoutingQuotaWindow {
+	model = strings.ToLower(model)
+	var ws []RoutingQuotaWindow
+	for _, l := range a {
+		span := l.Span.Milliseconds()
+		if !l.applies(model) || l.readAt.IsZero() || span <= 0 || l.Balance != nil ||
+			math.IsNaN(l.Used) || l.Used < 0 || l.Used > 100 {
+			continue
+		}
+		reset := l.Resets
+		if l.resetAfter > 0 {
+			reset = l.readAt.Add(l.resetAfter)
+		}
+		w := RoutingQuotaWindow{SpanMS: span, Used: l.Used, ReadAt: l.readAt.UnixMilli(),
+			ModelScoped: l.Model != "" || l.matches != nil}
+		if !reset.IsZero() {
+			w.ResetsAt = reset.UnixMilli()
+		}
+		ws = append(ws, w)
+	}
+	return ws
 }
 
 // For is what an allowance leaves a request for model at now: the share
@@ -1280,11 +1320,23 @@ func (a Allowance) restartedBy(runsOut time.Time) Allowance {
 // (#3650): the account is then not known, as one never read, rather than
 // one with all of it left, ahead of the rest.
 func routedAllowance(agent, user string, q SubscriptionQuota, now time.Time) (Allowance, bool) {
-	a := allowanceOf(q.Windows, now)
+	a := quotaAllowance(q, now)
 	if len(a) == 0 {
 		return nil, false
 	}
 	return a.restartedBy(resetRunsOut(agent, user, q.Windows, q.Resets)), true
+}
+
+// quotaAllowance ties the limits to the time of the card's own reading,
+// which may be much older than now (especially across Remote magpies).
+func quotaAllowance(q SubscriptionQuota, now time.Time) Allowance {
+	a := allowanceOf(q.Windows, now)
+	for i := range a {
+		if q.ReadAt != nil {
+			a[i].readAt = *q.ReadAt
+		}
+	}
+	return a
 }
 
 // allowanceOf keeps the windows that can stop an account.
@@ -1326,6 +1378,9 @@ func allowanceOf(ws []QuotaWindow, now time.Time) Allowance {
 			continue
 		}
 		l := Limit{Used: w.Used, Span: w.Span, Model: w.Model, Amount: w.Amount, Of: w.Limit, Unit: w.Unit, matches: w.matches, partial: w.partial, Name: w.Name, Credits: w.Credits, Resets: resets(w)}
+		if w.ResetsAt == nil && w.ResetSecs > 0 {
+			l.resetAfter = time.Duration(w.ResetSecs) * time.Second
+		}
 		if ids := families[w.Model]; ids != nil && w.Family != "" && w.matches == nil {
 			l.Model = ""
 			l.matches = func(model string) bool { return ids[model] }

@@ -2611,7 +2611,8 @@ func (c candidate) allowanceKey() allowanceKey {
 }
 
 type left struct {
-	used float64
+	used    float64
+	windows []provider.RoutingQuotaWindow
 	// freePlan: a Remote magpie's member whose card is of an account
 	// signed in to a free plan there (provider.RemoteSeat); this
 	// magpie's own accounts are told by Account.Plan
@@ -2732,6 +2733,8 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 	// alone is weighed against nobody, but what it has left is still
 	// told: the Routing page shows it (#1016)
 	known := map[string]map[string]provider.Allowance{}
+	st, hasStrategy := routes.Find(p.Routing)
+	withWindows := len(cs) > 1 && hasStrategy && st.ByQuota
 	now := time.Now()
 	wg.lefts = map[allowanceKey]left{}
 	for _, c := range cs {
@@ -2773,6 +2776,9 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 				l.bal, l.balUnit, l.balIn = b, bu, whose+"\x00"+bu
 			}
 			l.freePlan = free
+			if withWindows {
+				l.windows = a.QuotaWindows(m)
+			}
 			wg.lefts[c.allowanceKey()] = l
 		}
 	}
@@ -2781,8 +2787,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 	}
 	// the routing's strategy orders them (internal/routes): Smart, or one
 	// a plugin registered; one not registered leaves them in their order
-	st, ok := routes.Find(p.Routing)
-	if !ok {
+	if !hasStrategy {
 		return cs, wg
 	}
 	seats := make([]routes.Seat, len(cs))
@@ -2795,7 +2800,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
 			Used: l.used, WeekLow: l.weekLow, Soon: l.soon, Unreached: l.unreached, Lapse: l.lapse, Lapsing: l.lapsing, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits, First: l.first,
-			Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c), Lead: c.p.UseFirst}
+			Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c), Lead: c.p.UseFirst, QuotaWindows: l.windows}
 	}
 	routed.Unlock()
 	if st.ByUse {

@@ -119,6 +119,34 @@ func TestStrategiesServedWhileOn(t *testing.T) {
 	}
 }
 
+func TestStrategyQuotaWindows(t *testing.T) {
+	use(t, file(t, `export const strategies = {
+		windows: (pool, seats) => {
+			const [short, week] = seats[0].quotaWindows || [];
+			if (seats[0].used !== 81 || !short || short.spanMs !== 18000000 ||
+			    short.used !== 81 || short.resetsAt !== 1700000000123 ||
+			    !week || week.spanMs !== 604800000 || week.used !== 33 ||
+			    week.readAt !== 1699999000000 || !week.modelScoped ||
+			    "resetsAt" in week || "quotaWindows" in seats[1]) return [0, 1];
+			return [1, 0];
+		},
+	};`))
+	serve(t)
+	st, ok := routes.Find("x/windows")
+	if !ok || !st.ByQuota {
+		t.Fatal("the strategy does not ask for quota windows")
+	}
+	ss := seats(2)
+	ss[0].Used = 81
+	ss[0].QuotaWindows = []provider.RoutingQuotaWindow{
+		{SpanMS: (5 * time.Hour).Milliseconds(), Used: 81, ResetsAt: 1700000000123, ReadAt: 1699999000000},
+		{SpanMS: (7 * 24 * time.Hour).Milliseconds(), Used: 33, ReadAt: 1699999000000, ModelScoped: true},
+	}
+	if got := routes.Apply(st, "p1", ss); !slices.Equal(got, []int{1, 0}) {
+		t.Fatal("the module did not receive the independent quota windows:", got)
+	}
+}
+
 // A module turned off here (the Plugins page) is no longer served at once,
 // without waiting for the look for other processes' writes, which is
 // seconds apart (#3185).

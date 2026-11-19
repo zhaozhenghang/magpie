@@ -120,7 +120,7 @@ func RemoteSeat(p Provider, model string, ask bool) (a Allowance, inner string, 
 			if q.Provider != path || !q.routable || q.Error != "" || q.Held {
 				continue
 			}
-			qa := allowanceOf(q.Windows, now)
+			qa := quotaAllowance(q, now)
 			if len(qa) == 0 {
 				continue
 			}

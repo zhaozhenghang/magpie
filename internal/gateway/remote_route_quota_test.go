@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/routes"
 )
 
 // #6708 (zzh11223311 on X): a group of two Remote magpies, each serving
@@ -28,7 +29,7 @@ func TestRemoteMagpiesWeighedByTheirCards(t *testing.T) {
 	now := time.Now()
 	at := func(d time.Duration) *time.Time { t := now.Add(d); return &t }
 	claude := func(user string, week float64, renews time.Duration) []provider.SubscriptionQuota {
-		return []provider.SubscriptionQuota{{Provider: "claude", Name: "Claude Code", User: user, Kind: "subscription", Windows: []provider.QuotaWindow{
+		return []provider.SubscriptionQuota{{Provider: "claude", Name: "Claude Code", User: user, Kind: "subscription", ReadAt: at(-2 * time.Minute), Windows: []provider.QuotaWindow{
 			{Name: "5 hours", Used: 5, ResetsAt: at(4 * time.Hour), Span: 5 * time.Hour},
 			{Name: "7 days", Used: week, ResetsAt: at(renews), Span: 7 * 24 * time.Hour},
 			{Name: "7 days · Opus", Used: 99, ResetsAt: at(renews), Span: 7 * 24 * time.Hour, Model: "opus"},
@@ -84,6 +85,35 @@ func TestRemoteMagpiesWeighedByTheirCards(t *testing.T) {
 			t.Errorf("routing %q: b due %v, want its week's renewal", routing, lb.due)
 		}
 	}
+
+	t.Run("strategy sees the dated windows of each remote", func(t *testing.T) {
+		var seen []routes.Seat
+		remove := routes.Register("probe/windows", routes.Strategy{ByQuota: true, Order: func(_ string, seats []routes.Seat) []int {
+			seen = seats
+			return []int{1, 0}
+		}})
+		defer remove()
+		g := provider.Provider{ID: "group/auto-6708", Routing: "probe/windows"}
+		got, _ := weigh(g, []candidate{a, b}, "claude-sonnet-5-5", provider.Anthropic)
+		if got[0].p.ID != "mac-b" || len(seen) != 2 {
+			t.Fatalf("custom order = %v, saw %d seats", got[0].p.ID, len(seen))
+		}
+		for i, want := range []struct {
+			used  float64
+			reset time.Duration
+		}{{51, 117 * time.Hour}, {25, 44 * time.Hour}} {
+			windows := seen[i].QuotaWindows
+			if len(windows) != 2 {
+				t.Fatalf("seat %d: windows = %+v, want five hours and general week only", i, windows)
+			}
+			five, week := windows[0], windows[1]
+			if five.SpanMS != (5*time.Hour).Milliseconds() || five.Used != 5 ||
+				week.SpanMS != (7*24*time.Hour).Milliseconds() || week.Used != want.used ||
+				week.ReadAt != at(-2*time.Minute).UnixMilli() || week.ResetsAt != at(want.reset).UnixMilli() {
+				t.Errorf("seat %d: windows = %+v", i, windows)
+			}
+		}
+	})
 
 	// this gateway tells a magpie using it what routing reads of the cards
 	// it has from mac-a and mac-b

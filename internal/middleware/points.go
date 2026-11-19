@@ -38,6 +38,7 @@ import (
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/routes"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -199,23 +200,24 @@ var badPrefix = lazyre.New(`[^A-Za-z0-9._-]+`)
 
 // seatJSON is a routes.Seat as a strategy is given it.
 type seatJSON struct {
-	Key     string  `json:"key"`
-	Account bool    `json:"account"`
-	Known   bool    `json:"known"`
-	Learns  bool    `json:"learns"`
-	Used    float64 `json:"used"`
-	Soon    []int64 `json:"soon"` // unix ms
-	Pace    float64 `json:"pace"`
-	Weight  int     `json:"weight"`
-	Resting bool    `json:"resting"`
-	Tokens  float64 `json:"tokens"`
+	Key          string                        `json:"key"`
+	Account      bool                          `json:"account"`
+	Known        bool                          `json:"known"`
+	Learns       bool                          `json:"learns"`
+	Used         float64                       `json:"used"`
+	Soon         []int64                       `json:"soon"` // unix ms
+	Pace         float64                       `json:"pace"`
+	Weight       int                           `json:"weight"`
+	Resting      bool                          `json:"resting"`
+	Tokens       float64                       `json:"tokens"`
+	QuotaWindows []provider.RoutingQuotaWindow `json:"quotaWindows,omitempty"`
 }
 
 var errBusy = errors.New("its runtime was busy past the time a strategy has")
 
 // strategy is s of m as the router's strategy point takes it.
 func (m *mw) strategy(s strat) routes.Strategy {
-	return routes.Strategy{Order: func(pool string, seats []routes.Seat) []int {
+	return routes.Strategy{ByQuota: true, Order: func(pool string, seats []routes.Seat) []int {
 		order, err := m.order(s.h, pool, seats)
 		if err != nil {
 			m.fail("strategies."+s.name, err)
@@ -237,7 +239,9 @@ func (m *mw) order(h moejs.Hook, pool string, seats []routes.Seat) ([]int, error
 		for j, t := range s.Soon {
 			soon[j] = t.UnixMilli()
 		}
-		list[i] = seatJSON{s.Key, s.Account, s.Known, s.Learns, s.Used, soon, s.Pace, s.Weight, s.Resting, s.Tokens}
+		list[i] = seatJSON{Key: s.Key, Account: s.Account, Known: s.Known, Learns: s.Learns,
+			Used: s.Used, Soon: soon, Pace: s.Pace, Weight: s.Weight, Resting: s.Resting,
+			Tokens: s.Tokens, QuotaWindows: s.QuotaWindows}
 	}
 	b, err := json.Marshal(list)
 	if err != nil {

@@ -16,6 +16,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // Seat is one route of a pool, as a strategy weighs it.
@@ -69,6 +71,8 @@ type Seat struct {
 	Spent bool
 	// Tokens is what magpie sent it lately, decayed by an hour's half-life
 	Tokens float64
+	// QuotaWindows are dated allowance readings that count the seat's model.
+	QuotaWindows []provider.RoutingQuotaWindow
 	// Free: the model this seat would be asked for costs nothing on it —
 	// its vendor serves that model at no cost to the subscription's
 	// allowance or credits (catalog.Model's Free). FreeFirst goes by it.
@@ -132,6 +136,8 @@ type Strategy struct {
 	Exact bool
 	// ByUse: it weighs by Tokens, which the routing trace then shows
 	ByUse bool
+	// ByQuota asks for the seat's individual allowance readings.
+	ByQuota bool
 	// ByFree: it weighs by Free, so the gateway works out which seat's
 	// model costs nothing there, and the routing trace then shows it.
 	// Only when set: working it out reads each provider's model list.
