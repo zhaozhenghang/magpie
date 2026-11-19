@@ -31,7 +31,7 @@ test("ranks by weekly progress with offset resets, using 5h only for close score
   assert.deepEqual(route([b, a]), [1, 0]);
 });
 
-test("a passed reset or a stale, partial or ambiguous week retains list order", t => {
+test("a missing or stale week falls back to recent work, then list order", t => {
   t.mock.method(Date, "now", () => at);
   const valid = seat(at, 12, at + 48 * hour, 10);
   const stale = seat(at, 65, at + 84 * hour, 10);
@@ -49,6 +49,8 @@ test("a passed reset or a stale, partial or ambiguous week retains list order", 
   ambiguous.quotaWindows.push(ambiguous.quotaWindows[1]);
   assert.deepEqual(route([ambiguous, valid]), [0, 1]);
   assert.deepEqual(route([{ used: 100 }, valid]), [1, 0]);
+  valid.tokens = 20_000;
+  assert.deepEqual(route([valid, stale]), [1, 0]);
 });
 
 test("the first new sample after a reset starts the new cycle across year boundaries", t => {
