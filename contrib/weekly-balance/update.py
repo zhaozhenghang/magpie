@@ -106,6 +106,13 @@ def http_local():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def gateway_idle(address):
+    with http_local().open(f"http://{address}/v1/magpie/concurrency", timeout=5) as response:
+        load = json.load(response)
+    return load.get("object") == "concurrency" and all(
+        load.get(key) == 0 for key in ("requests", "tools", "waiting"))
+
+
 def restart(root, address, expected, target):
     running = status(root, address)
     if not running["running"]:
@@ -222,6 +229,9 @@ def update(root, address, staging, current, version):
         return
     if live["version"] != current or live["role"] not in ("app", "tray"):
         raise RuntimeError("The selected gateway is not the running Weekly Balance app")
+    if not gateway_idle(address):
+        print("The gateway has active requests or turns. Will retry on the next check.")
+        return
     config = json.loads((root / "data" / "settings.json").read_text())
     if not config.get("noAutoUpdate"):
         raise RuntimeError("Turn off the official updater in this portable instance first")
