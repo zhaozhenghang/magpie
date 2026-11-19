@@ -1,0 +1,88 @@
+name: Weekly Balance Release
+
+on:
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: 'Official version without v, or blank to follow Daily'
+        type: string
+
+concurrency:
+  group: weekly-balance-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'zhaozhenghang/magpie' && github.ref == 'refs/heads/weekly-balance'
+    runs-on: macos-15
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      # The first release should not downgrade an install already at this version.
+      UPSTREAM_MINIMUM: '0.1.4533'
+      FORK_REVISION: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select the official release
+        id: version
+        env:
+          MANUAL_VERSION: ${{ inputs.upstream_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream="$MANUAL_VERSION"
+          if [[ -z "$upstream" ]]; then
+            upstream=$(curl -fsSL --retry 2 --max-time 30 'https://usemagpie.ai/api/latest?channel=daily' | jq -er .version)
+          fi
+          [[ "$upstream" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$FORK_REVISION" =~ ^[1-9][0-9]*$ ]]
+          upstream=$(printf '%s\n' "$UPSTREAM_MINIMUM" "$upstream" | sort -V | tail -1)
+          target="fork-v$upstream-weekly.$FORK_REVISION"
+          [[ "$(gh release view "v$upstream" -R yetone/magpie-releases --json isDraft,isPrerelease --jq '(.isDraft or .isPrerelease)')" == false ]]
+          published=$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 --json tagName --jq '.[].tagName')
+          if printf '%s\n' "$published" | grep -Fxq "$target"; then
+            echo "Already published $target"
+            exit 0
+          fi
+          {
+            echo "upstream=$upstream"
+            echo "tag=$target"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.version.outputs.tag != ''
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Apply patches, test and build
+        if: steps.version.outputs.tag != ''
+        env:
+          UPSTREAM_VERSION: ${{ steps.version.outputs.upstream }}
+        run: bash contrib/weekly-balance/build-release.sh "$UPSTREAM_VERSION" "$FORK_REVISION" "$RUNNER_TEMP/release"
+      - name: Attest the app archive and plugin
+        if: steps.version.outputs.tag != ''
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/magpie-darwin-arm64.zip
+            ${{ runner.temp }}/release/weekly-balance.gateway.js
+      - name: Publish the verified build
+        if: steps.version.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release"
+          {
+            printf 'Weekly Balance fork\n\n'
+            printf 'Upstream commit: %s\n' "$(cat upstream-commit.txt)"
+            printf 'Fork commit: %s\n' "$GITHUB_SHA"
+          } > notes.md
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --notes-file notes.md magpie-darwin-arm64.zip weekly-balance.gateway.js upstream-commit.txt
