@@ -52,7 +52,10 @@ function weeklyBalance(_pool, seats, options) {
   const compareShort = compareWeek && available.every(item => item.short !== null);
   order.sort((a, b) => {
     if (a.unavailable !== b.unavailable) return a.unavailable ? 1 : -1;
-    if (a.unavailable || !compareWeek) return a.index - b.index;
+    if (a.unavailable) return a.index - b.index;
+    // Let an idle account take a turn and pick up a new sample when one
+    // of the comparable week readings has aged out.
+    if (!compareWeek) return a.tokens - b.tokens || a.index - b.index;
     return a.weekly - b.weekly || (compareShort ? a.short - b.short : 0) ||
       a.tokens - b.tokens || a.index - b.index;
   });
