@@ -174,16 +174,24 @@ def install(root, address, staging, version):
     check_bundle(app, version)
     (root / ".portable").touch(exist_ok=True)
     app.rename(root / APP)
+    data = root / "data"
+    created_data = False
     try:
+        data.mkdir(mode=0o700)
+        created_data = True
+        (data / "settings.json").write_text(json.dumps({
+            "port": int(address.split(":")[1]),
+            "noAutoUpdate": True,
+        }) + "\n")
         (staging / PLUGIN).rename(root / PLUGIN)
         binary = str(root / APP / BINARY)
-        run(binary, "update", "auto", "off")
-        run(binary, "settings", "set", "port", address.split(":")[1])
         run(binary, "plugin", "add", str(root / PLUGIN))
         check_plugin(root)
     except Exception:
         shutil.rmtree(root / APP)
         (root / PLUGIN).unlink(missing_ok=True)
+        if created_data:
+            shutil.rmtree(data)
         raise
     print(f"Installed {version} in {root}")
 
