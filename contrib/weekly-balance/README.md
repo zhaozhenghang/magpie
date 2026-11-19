@@ -9,6 +9,17 @@
 - `weekly-balance` 增加独立 JS 策略、本地更新器和 Fork 发布工作流。
 - [上游需求 #7207](https://github.com/yetone/magpie/issues/7207) 记录了两个应用场景。
 
+## 接管现有安装
+
+需要 ARM64 macOS、Python 3 和已登录的 GitHub CLI。默认网关端口为 `3425`。安装器验证发布包及插件的构建证明，等到网关空闲后，原位替换 `/Applications/magpie.app`。新 App 直接读取 `~/.config/magpie`，沿用已有设置、账号和端口。原版 App 的备份保存在 `~/.config/magpie/weekly-balance/official/`。
+
+```sh
+python3 update.py install --in-place --root /Applications
+python3 update.py launch-agent --in-place --root /Applications
+```
+
+网关端口不同的安装在两条命令中都传 `--addr 127.0.0.1:端口`。在目标模型组中选择 `weekly-balance/weekly-balance` 后即可使用。手动检查和回滚使用相同的 `--in-place`、`--root` 和 `--addr` 参数。本机更新日志位于 `~/.config/magpie/weekly-balance/updater.log`。
+
 ## 隔离安装
 
 需要 ARM64 macOS、Python 3 和已登录的 GitHub CLI。安装器验证应用压缩包及插件的 GitHub 构建证明，再装入单独的便携目录并设置独立的网关端口。保留现有官方 App，可继续用原来的网关。先用测试账号或模拟线路验证，再接入真实业务。远端订阅的账号上限应在远端核实。
@@ -35,7 +46,7 @@ magpie="$root/magpie.app/Contents/MacOS/magpie"
 
 发布工作流每 6 小时读取官方 Daily 版本。从上游 tag 应用分支补丁，运行 Go 网关验证和 JS 模拟，构建 ARM64 App，再为压缩包和插件生成构建证明。补丁冲突或测试失败会中止发布。修订同一上游版本的策略时，提高工作流中的 `FORK_REVISION`。GitHub 的定时工作流从 Fork 的默认分支运行，默认分支应是 `weekly-balance`。
 
-本地安装器关闭便携实例的官方更新。本地更新器校验自建包的构建证明，把已验证的包交给 Magpie 自带的本机安装及接续机制，并检查重启后的网关版本和插件。健康检查失败时尝试恢复上一版应用和插件。回滚后会跳过刚撤回的版本，等下一个版本发布。更新前另外保留便携目录内的配置和登录备份，有迁移时配置也可能需要跟随回滚。
+本地安装器关闭所接管实例的官方更新。本地更新器校验自建包的构建证明，把已验证的包交给 Magpie 自带的本机安装及接续机制，并检查重启后的网关版本和插件。健康检查失败时尝试恢复上一版应用和插件。回滚后会跳过刚撤回的版本，等下一个版本发布。
 
 ```sh
 python3 update.py update --root "$root"

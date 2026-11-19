@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install and update the separate macOS Weekly Balance build."""
+"""Install and update the macOS Weekly Balance build."""
 
 import argparse
 import contextlib
@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO = "zhaozhenghang/magpie"
@@ -28,7 +29,24 @@ ASSET = "magpie-darwin-arm64.zip"
 PLUGIN = "weekly-balance.gateway.js"
 STRATEGY = "weekly-balance/weekly-balance"
 APP_ID = "io.github.zhaozhenghang.magpie.weekly-balance"
+OFFICIAL_ID = "com.yetone.magpie"
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)-weekly\.([1-9]\d*)")
+
+
+@dataclass(frozen=True)
+class Installation:
+    root: Path
+    config: Path
+    state: Path
+    in_place: bool
+
+    @property
+    def app(self):
+        return self.root / APP
+
+    @property
+    def plugin(self):
+        return self.state / PLUGIN
 
 
 def run(*args, capture=False, env=None, timeout=120):
@@ -63,10 +81,14 @@ def download(version, staging):
             "--deny-self-hosted-runners")
 
 
-def app_version(app):
+def bundle_info(app):
     if app.is_symlink():
         raise RuntimeError("Refusing to replace an app symlink")
-    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    return plistlib.loads((app / "Contents/Info.plist").read_bytes())
+
+
+def app_version(app):
+    info = bundle_info(app)
     if info["CFBundleIdentifier"] != APP_ID:
         raise RuntimeError("This app is outside the Weekly Balance update channel")
     version = info["MagpieWeeklyBalanceVersion"]
@@ -80,10 +102,10 @@ def check_bundle(app, version):
         raise RuntimeError("Bundle and executable versions do not match the release")
 
 
-def check_plugin(root):
-    result = run(str(root / APP / BINARY), "plugin", "list", "--json", capture=True)
+def check_plugin(app, plugin):
+    result = run(str(app / BINARY), "plugin", "list", "--json", capture=True)
     listing = json.loads(result)
-    state = listing.get("middleware", {}).get(str(root / PLUGIN)) if isinstance(listing, dict) else None
+    state = listing.get("middleware", {}).get(str(plugin)) if isinstance(listing, dict) else None
     if not state or state.get("error") or STRATEGY not in state.get("strategies", []):
         raise RuntimeError("The Weekly Balance plugin did not load")
 
@@ -134,6 +156,24 @@ def exchange(a, b):
         raise OSError(error, os.strerror(error))
 
 
+def unpack(staging, version):
+    run("/usr/bin/ditto", "-x", "-k", str(staging / ASSET), str(staging / "unpacked"))
+    app = staging / "unpacked" / APP
+    check_bundle(app, version)
+    return app
+
+
+def write_atomic(path, data):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as file:
+        pending = Path(file.name)
+        try:
+            file.write(data)
+            file.close()
+            pending.replace(path)
+        finally:
+            pending.unlink(missing_ok=True)
+
+
 @contextlib.contextmanager
 def verified_feed(staging, version):
     archive = staging / ASSET
@@ -176,9 +216,7 @@ def verified_feed(staging, version):
 
 
 def install(root, address, staging, version):
-    run("/usr/bin/ditto", "-x", "-k", str(staging / ASSET), str(staging / "unpacked"))
-    app = staging / "unpacked" / APP
-    check_bundle(app, version)
+    app = unpack(staging, version)
     (root / ".portable").touch(exist_ok=True)
     app.rename(root / APP)
     data = root / "data"
@@ -193,7 +231,7 @@ def install(root, address, staging, version):
         (staging / PLUGIN).rename(root / PLUGIN)
         binary = str(root / APP / BINARY)
         run(binary, "plugin", "add", str(root / PLUGIN))
-        check_plugin(root)
+        check_plugin(root / APP, root / PLUGIN)
     except Exception:
         shutil.rmtree(root / APP)
         (root / PLUGIN).unlink(missing_ok=True)
@@ -203,28 +241,104 @@ def install(root, address, staging, version):
     print(f"Installed {version} in {root}")
 
 
-def rollback(root, address, previous):
-    app = root / APP
+def check_official(layout, address):
+    if bundle_info(layout.app)["CFBundleIdentifier"] != OFFICIAL_ID:
+        raise RuntimeError("Expected the installed official Magpie app")
+    installed = run(str(layout.app / BINARY), "--version", capture=True).strip().removeprefix("magpie ")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", installed):
+        raise RuntimeError("Expected a released official Magpie version")
+    live = status(layout.root, address)
+    if live["running"]:
+        if live["version"] != installed or live["role"] not in ("app", "tray"):
+            raise RuntimeError("The selected gateway is not the official app")
+        exe = run("/bin/ps", "-p", str(live["pid"]), "-o", "comm=", capture=True).strip()
+        if Path(exe).resolve() != layout.app / BINARY:
+            raise RuntimeError("The selected gateway is running from a different path")
+        if not gateway_idle(address):
+            raise RuntimeError("The Magpie gateway is busy. Wait for its requests to finish and retry.")
+    return installed
+
+
+def install_in_place(layout, address, staging, version):
+    official = check_official(layout, address)
+    if version_key(version)[:3] < tuple(map(int, official.split("."))):
+        raise RuntimeError("The Weekly Balance release is based on an older official version")
+    app = unpack(staging, version)
+    original = layout.state / "official" / APP
+    if not original.exists():
+        saved = staging / "official-backup.app"
+        run("/usr/bin/ditto", str(layout.app), str(saved))
+        original.parent.mkdir(exist_ok=True)
+        saved.rename(original)
+
+    snapshots = {}
+    for name in ("settings.json", "plugins.json"):
+        path = layout.config / name
+        snapshots[path] = path.read_bytes() if path.exists() else None
+    settings = layout.config / "settings.json"
+    config = json.loads(snapshots[settings])
+    if layout.plugin.exists():
+        raise RuntimeError("An existing Weekly Balance plugin already occupies the install path")
+
+    with tempfile.TemporaryDirectory(prefix=".magpie-weekly-", dir=layout.root) as folder:
+        staged_app = Path(folder) / APP
+        run("/usr/bin/ditto", str(app), str(staged_app))
+        binary = staged_app / BINARY
+        switched = False
+        try:
+            (staging / PLUGIN).rename(layout.plugin)
+            run(str(binary), "plugin", "add", str(layout.plugin), capture=True)
+            check_plugin(staged_app, layout.plugin)
+            check_official(layout, address)
+            config["noAutoUpdate"] = True
+            write_atomic(settings, (json.dumps(config, ensure_ascii=False, indent=2) + "\n").encode())
+            exchange(layout.app, staged_app)
+            switched = True
+            restart(layout.root, address, official, version)
+            wait_for_version(layout.root, address, version, timeout=180)
+            check_plugin(layout.app, layout.plugin)
+        except Exception:
+            if switched:
+                exchange(layout.app, staged_app)
+            for path, data in snapshots.items():
+                if data is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    write_atomic(path, data)
+            layout.plugin.unlink(missing_ok=True)
+            if switched:
+                restart(layout.root, address, version, official)
+                wait_for_version(layout.root, address, official, timeout=180)
+            raise
+    print(f"Installed {version} in place at {layout.app}")
+
+
+def rollback(layout, address, previous):
+    app = layout.app
     old_app = previous / APP
     current, old = app_version(app), app_version(old_app)
     if current == old:
         raise RuntimeError("No older build available")
     check_bundle(old_app, old)
-    live = status(root, address)
+    live = status(layout.root, address)
     if live["running"] and live["version"] not in (current, old):
         raise RuntimeError("The selected gateway belongs to another copy")
-    exchange(app, old_app)
-    exchange(root / PLUGIN, previous / PLUGIN)
-    restart(root, address, current, old)
-    wait_for_version(root, address, old, timeout=660)
-    check_plugin(root)
-    (root / "failed-version").write_text(current + "\n")
+    exchange(layout.plugin, previous / PLUGIN)
+    try:
+        exchange(app, old_app)
+    except OSError:
+        exchange(layout.plugin, previous / PLUGIN)
+        raise
+    restart(layout.root, address, current, old)
+    wait_for_version(layout.root, address, old, timeout=660)
+    check_plugin(app, layout.plugin)
+    (layout.state / "failed-version").write_text(current + "\n")
     print(f"Restored {old}")
 
 
-def update(root, address, staging, current, version):
-    app, plugin = root / APP, root / PLUGIN
-    live = status(root, address)
+def update(layout, address, staging, current, version):
+    app, plugin = layout.app, layout.plugin
+    live = status(layout.root, address)
     if not live["running"]:
         print("Weekly Balance is closed. Will update when its gateway is running.")
         return
@@ -233,10 +347,10 @@ def update(root, address, staging, current, version):
     if not gateway_idle(address):
         print("The gateway has active requests or turns. Will retry on the next check.")
         return
-    config = json.loads((root / "data" / "settings.json").read_text())
+    config = json.loads((layout.config / "settings.json").read_text())
     if not config.get("noAutoUpdate"):
-        raise RuntimeError("Turn off the official updater in this portable instance first")
-    previous = root / "previous"
+        raise RuntimeError("Turn off the official updater in this Weekly Balance installation first")
+    previous = layout.state / "previous"
     backup = staging / "previous"
     backup.mkdir(mode=0o700)
     run("/usr/bin/ditto", str(app), str(backup / APP))
@@ -252,38 +366,59 @@ def update(root, address, staging, current, version):
             run(str(app / BINARY), "update", "--addr", address, "--proxy", "direct",
                 "--mirror", "off", env=env, timeout=300)
         check_bundle(app, version)
-        wait_for_version(root, address, version, timeout=660)
+        wait_for_version(layout.root, address, version, timeout=660)
         (staging / PLUGIN).replace(plugin)
-        check_plugin(root)
+        check_plugin(app, plugin)
     except Exception:
-        (root / "failed-version").write_text(version + "\n")
+        (layout.state / "failed-version").write_text(version + "\n")
         if app_version(app) != current:
-            rollback(root, address, previous)
+            # Keep the rejected pair together even if the app failed before the JS swap.
+            if (staging / PLUGIN).exists():
+                (staging / PLUGIN).replace(plugin)
+            rollback(layout, address, previous)
         raise
     print(f"Updated {current} → {version}")
 
 
-def launch_agent(root, address):
-    app_version(root / APP)
+def launch_agent(layout, address):
+    app_version(layout.app)
     label = APP_ID + ".update"
     folder = Path.home() / "Library/LaunchAgents"
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = folder / f"{label}.plist"
+    command = [sys.executable, str(Path(__file__).resolve()), "update",
+               "--root", str(layout.root), "--addr", address]
+    environment = {"PATH": os.environ["PATH"], "GH_PROMPT_DISABLED": "1"}
+    if layout.in_place:
+        script = layout.state / "update.py"
+        command[1] = str(script)
+        command.append("--in-place")
+        environment["XDG_CONFIG_HOME"] = str(layout.config.parent)
     spec = {
         "Label": label,
-        "ProgramArguments": [sys.executable, str(Path(__file__).resolve()), "update",
-                             "--root", str(root), "--addr", address],
+        "ProgramArguments": command,
         "StartInterval": 6 * 60 * 60,
-        "EnvironmentVariables": {"PATH": os.environ["PATH"], "GH_PROMPT_DISABLED": "1"},
-        "StandardOutPath": str(root / "updater.log"),
-        "StandardErrorPath": str(root / "updater.log"),
+        "EnvironmentVariables": environment,
+        "StandardOutPath": str(layout.state / "updater.log"),
+        "StandardErrorPath": str(layout.state / "updater.log"),
     }
-    with path.open("xb") as file:
-        plistlib.dump(spec, file)
+    existing = path.exists()
+    if existing and plistlib.loads(path.read_bytes()) != spec:
+        raise RuntimeError(f"A different Weekly Balance launch agent already exists at {path}")
+    if layout.in_place:
+        write_atomic(script, Path(__file__).read_bytes())
+    service = f"gui/{os.getuid()}/{label}"
+    if existing and subprocess.run(["/bin/launchctl", "print", service], capture_output=True).returncode == 0:
+        print(f"Already scheduled {label}")
+        return
+    if not existing:
+        with path.open("xb") as file:
+            plistlib.dump(spec, file)
     try:
         run("/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(path))
     except Exception:
-        path.unlink()
+        if not existing:
+            path.unlink()
         raise
     print(f"Scheduled {label}")
 
@@ -292,42 +427,62 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "update", "rollback", "launch-agent"))
     parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("--addr", default="127.0.0.1:13425")
+    parser.add_argument("--addr")
+    parser.add_argument("--in-place", action="store_true", help="Reuse the installed app's user configuration")
     args = parser.parse_args()
+    if args.addr is None:
+        args.addr = "127.0.0.1:3425" if args.in_place else "127.0.0.1:13425"
     if not re.fullmatch(r"127\.0\.0\.1:[1-9][0-9]{0,4}", args.addr) or int(args.addr.split(":")[1]) > 65535:
         parser.error("--addr must be a loopback 127.0.0.1 host and port")
     if sys.platform != "darwin" or os.uname().machine != "arm64":
         parser.error("This build is for ARM64 macOS")
     os.umask(0o077)
     root = args.root.expanduser().resolve()
-    if args.action == "install":
+    if args.in_place:
+        xdg = Path(os.environ.get("XDG_CONFIG_HOME", ""))
+        config = (xdg if xdg.is_absolute() else Path.home() / ".config") / "magpie"
+        if (root / ".portable").exists() or (root / "data").is_dir():
+            raise RuntimeError("The app directory must use Magpie's installed configuration")
+        layout = Installation(root, config, config / "weekly-balance", True)
+        if not (layout.app / BINARY).is_file() or not (config / "settings.json").is_file():
+            raise RuntimeError("The existing app and its user configuration are required")
+    else:
+        layout = Installation(root, root / "data", root, False)
+    if args.action == "install" and not args.in_place:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    elif not (root / ".portable").is_file():
+    elif not args.in_place and not (root / ".portable").is_file():
         raise RuntimeError("Choose the separate portable Weekly Balance install")
-    with (root / ".update.lock").open("a") as lock:
+    layout.state.mkdir(mode=0o700, exist_ok=True)
+    with (layout.state / ".update.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.action == "rollback":
-            rollback(root, args.addr, root / "previous")
+            rollback(layout, args.addr, layout.state / "previous")
             return
         if args.action == "launch-agent":
-            launch_agent(root, args.addr)
+            launch_agent(layout, args.addr)
             return
-        current = app_version(root / APP) if (root / APP).exists() else None
-        if args.action == "install" and (current or any((root / name).exists() for name in ("data", PLUGIN))):
-            raise RuntimeError("Choose a new install directory")
+        if args.action == "install" and args.in_place:
+            check_official(layout, args.addr)
+            current = None
+        else:
+            current = app_version(layout.app) if layout.app.exists() else None
+            if args.action == "install" and (current or layout.config.exists() or layout.plugin.exists()):
+                raise RuntimeError("Choose a new install directory")
         if args.action == "update" and current is None:
             raise RuntimeError("Install the fork first")
         version = latest_version()
-        failed = root / "failed-version"
+        failed = layout.state / "failed-version"
         if current and (version_key(version) <= version_key(current) or
                         failed.exists() and failed.read_text().strip() == version):
             print(f"No applicable update for {current}")
             return
-        with tempfile.TemporaryDirectory(prefix=".update-", dir=root) as folder:
+        with tempfile.TemporaryDirectory(prefix=".update-", dir=layout.state) as folder:
             staging = Path(folder)
             download(version, staging)
             if current:
-                update(root, args.addr, staging, current, version)
+                update(layout, args.addr, staging, current, version)
+            elif args.in_place:
+                install_in_place(layout, args.addr, staging, version)
             else:
                 install(root, args.addr, staging, version)
 

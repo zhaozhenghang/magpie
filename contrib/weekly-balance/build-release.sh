@@ -44,6 +44,7 @@ mkdir -m 700 "$HOME"
 go test -tags nogui -count=1 -run '^Test(RoutedAllowanceQuotaWindows|StrategyQuotaWindows|RemoteMagpiesWeighedByTheirCards|WeeklyBalancePluginOnRemoteGroup|WindowCapsHoldTheAccount|RemoteMagpieQuotaRestsTheModel|StrategyFailsOpen|StrategiesServedWhileOn)$' \
   ./internal/provider ./internal/middleware ./internal/gateway
 node --test contrib/weekly-balance/weekly-balance.test.mjs
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s contrib/weekly-balance -p test_update.py
 
 make app VERSION="$version"
 plist="magpie.app/Contents/Info.plist"
