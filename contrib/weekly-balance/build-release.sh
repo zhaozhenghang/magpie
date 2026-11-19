@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 tag="v$upstream"
 official=https://github.com/yetone/magpie.git
-git fetch --no-tags --no-write-fetch-head --depth=1 "$official" "refs/tags/$tag:$upstream_ref"
+git fetch --no-tags --no-write-fetch-head "$official" "refs/tags/$tag:$upstream_ref"
 upstream_commit=$(git rev-parse "$upstream_ref^{commit}")
 git worktree add -q --detach "$checkout" "$upstream_commit"
 git -C "$checkout" -c user.name='Magpie Weekly Balance' -c user.email='magpie-weekly-balance@users.noreply.github.com' \
