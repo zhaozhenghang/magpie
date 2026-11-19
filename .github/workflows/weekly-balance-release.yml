@@ -16,7 +16,7 @@ concurrency:
 jobs:
   release:
     if: github.repository == 'zhaozhenghang/magpie' && github.ref == 'refs/heads/weekly-balance'
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 35
     permissions:
       contents: write
