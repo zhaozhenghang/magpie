@@ -95,6 +95,33 @@ function renderBareIds(s) {
       .catch((e) => { status(t(e.message), "err"); renderSettings(); })));
 }
 
+function renderModelRoutingRows(s, ...rows) {
+  const title = t("Turn affinity timeout (minutes)");
+  const row = el("div", "row pref");
+  row.id = "turnAffinityRow";
+  const who = el("div", "who"), val = el("div", "val");
+  who.append(el("div", "name", title), el("div", "sub", t("Applies to all models set to stay on one route within a turn. A turn that resumes after this much idle time is routed again")));
+  const field = input(String(s.turnAffinityMinutes ?? ""), "", "number");
+  field.className = "words";
+  field.style.cssText = "width:96px;flex:none";
+  field.setAttribute("aria-label", title);
+  field.required = true;
+  field.min = "1";
+  field.max = "43200";
+  const save = el("button", "text", t("Apply"));
+  save.onclick = () => {
+    if (!field.reportValidity()) return;
+    const minutes = Number(field.value);
+    if (minutes === s.turnAffinityMinutes) return;
+    save.disabled = true;
+    savePrefs({ turnAffinityMinutes: minutes });
+  };
+  field.onkeydown = (e) => { if (e.key === "Enter") { e.stopPropagation(); save.click(); } };
+  val.append(field, save);
+  row.append(who, val);
+  $("#routeList").replaceChildren(...rows, $("#busyLoadRow"), $("#contextCapRow"), row);
+}
+
 // renderBusyLoad, in Settings › Models › Routing with the other rows on
 // where a request goes: the load past which a model its plugin says is busy
 // (magpie.load) goes behind the others (settings.BusyLoad, axelburks on

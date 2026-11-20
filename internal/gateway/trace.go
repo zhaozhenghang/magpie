@@ -605,8 +605,6 @@ type AutoReset struct {
 
 type planned struct {
 	order, left []Weighed
-	// Maximum time since the last answer for a group to keep its turn's route.
-	turnAffinityIdle time.Duration
 	// held: the accounts left out (in left) as they won't spend their
 	// credits, for one that spends its resets by itself to spend one
 	held []candidate

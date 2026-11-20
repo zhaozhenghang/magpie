@@ -80,6 +80,8 @@ checks the two attempts against an HTTP/2 server that never reads the body.
 
 ## Routing recipes
 
+Routes set to `turn` share `settings.Settings.TurnAffinityIdle` regardless of the selected strategy. The gateway reads the global value on each continuation and keeps the previous route only while the time since its last answer is below the limit. Expiry appears as `turn-timeout` in the routing trace. The default is 60 minutes.
+
 A routing group's templates (`provider.Templates` in
 [`grouptemplate.go`](../../internal/provider/grouptemplate.go); the Routing
 page's cards, then its Templates menu; `magpie group template`) are groups

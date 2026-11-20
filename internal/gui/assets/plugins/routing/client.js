@@ -1336,6 +1336,7 @@ function routingPage(part) {
       case "hours": return t("{who} answered this conversation last, by rule {rule}, but the rule's hours are over, so turn {n} goes where the group routes it.", { who: last, rule: r.rule?.ended, n: a.turn });
       case "no-cache": return t("{who} answered this conversation last, but the vendor then read only {r} tokens of it from its cache and wrote {w} — not worth staying for.", { who: last, r: tokens(a.cacheRead || 0), w: tokens(a.cacheWrite || 0) });
       case "cold": return t("{who} answered this conversation {d} ago, longer than the 5 minutes a vendor keeps a prompt cached — so routing decides afresh.", { who: last, d: ago });
+      case "turn-timeout": return t("Turn {n} was idle for {d}. Its affinity expired and routing decided again.", { n: a.turn, d: ago });
       case "off": return t("Affinity is off: each request is routed afresh, whoever answered its conversation before.");
       case "rule": {
         // the group's rule, or that of a group in it, that moved it

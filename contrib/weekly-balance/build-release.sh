@@ -41,8 +41,8 @@ cd "$checkout"
 export GOPATH=$(go env GOPATH) GOMODCACHE=$(go env GOMODCACHE) GOCACHE=$(go env GOCACHE)
 export HOME="$temp_dir/home" USERPROFILE="$temp_dir/home"
 mkdir -m 700 "$HOME"
-go test -tags nogui -count=1 -run '^Test(RoutedAllowanceQuotaWindows|StrategyQuotaWindows|RemoteMagpiesWeighedByTheirCards|WeeklyBalancePluginOnRemoteGroup|WindowCapsHoldTheAccount|RemoteMagpieQuotaRestsTheModel|StrategyFailsOpen|StrategiesServedWhileOn)$' \
-  ./internal/provider ./internal/middleware ./internal/gateway
+go test -tags nogui -count=1 -run '^Test(RoutedAllowanceQuotaWindows|StrategyQuotaWindows|RemoteMagpiesWeighedByTheirCards|WeeklyBalancePluginOnRemoteGroup|WindowCapsHoldTheAccount|RemoteMagpieQuotaRestsTheModel|StrategyFailsOpen|StrategiesServedWhileOn|ProviderTurnAffinityUsesGlobalTimeout|SettingsSetGetReset|SettingsCLISetsWhatTheWindowSaves|KeysAreWhatTheSaveWrites)$' \
+  ./internal/provider ./internal/middleware ./internal/gateway ./internal/cli ./internal/settingsapi
 node --test contrib/weekly-balance/weekly-balance.test.mjs
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s contrib/weekly-balance -p test_update.py
 

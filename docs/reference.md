@@ -2136,6 +2136,10 @@ stays with the key or account that answered it: `auto` (the default, while
 the vendor's cache of it is worth keeping), `session`, `turn`, `off` or
 `strict` (never moved to another key or account, even past its usage cap:
 its errors go to the agent).
+For `turn`, a provider or group uses the global **Turn affinity timeout** in
+Settings › Models › Routing. It defaults to 60 minutes after the last answer.
+The next request after that interval is routed again even within the same
+turn. `magpie settings set turnAffinityMinutes 30` changes the limit.
 `models=` replaces the whole list, in order; a bare model id works when only
 one provider serves it.
 

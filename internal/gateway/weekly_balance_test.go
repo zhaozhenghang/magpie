@@ -135,13 +135,21 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	for _, tc := range []struct {
 		name, want, why string
 		idle            time.Duration
+		minutes         int
 		kept            bool
 	}{
-		{"within an hour", "remote-a", "turn", 59 * time.Minute, true},
-		{"at one hour", "remote-b", "cold", time.Hour, false},
-		{"overnight", "remote-b", "cold", 15 * time.Hour, false},
+		{"within an hour", "remote-a", "turn", 59 * time.Minute, 60, true},
+		{"at one hour", "remote-b", "turn-timeout", time.Hour, 60, false},
+		{"overnight", "remote-b", "turn-timeout", 15 * time.Hour, 60, false},
+		{"within configured limit", "remote-a", "turn", 19 * time.Minute, 20, true},
+		{"at configured limit", "remote-b", "turn-timeout", 20 * time.Minute, 20, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			prefs := settings.Load()
+			prefs.TurnAffinityMinutes = tc.minutes
+			if err := settings.Save(prefs); err != nil {
+				t.Fatal(err)
+			}
 			h := make(http.Header)
 			h.Set("x-session-id", tc.name)
 			key := stickKey("group/weekly", h, []byte(tool))
@@ -164,5 +172,39 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	ask(t, "second", first, "remote-a")
 	if state := middleware.States()[src]; state.Orders < 2 || state.Failures != 0 {
 		t.Fatalf("strategy state = %+v", state)
+	}
+}
+
+func TestProviderTurnAffinityUsesGlobalTimeout(t *testing.T) {
+	fresh(t)
+	next := candidate{p: provider.Provider{ID: "first"}, rest: "first", model: "m"}
+	last := candidate{p: provider.Provider{ID: "last"}, rest: "last", model: "m"}
+	const scope = "provider/m"
+	const tool = `{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"ls","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"a.go"}]}`
+	in := http.Header{"X-Session-Id": {"direct-provider"}}
+	body := []byte(tool)
+	key := stickKey(scope, in, body)
+	answered(key, last, 1, Usage{CacheRead: 2000})
+	sticks.Lock()
+	record := sticks.m[key]
+	record.at = record.at.Add(-25 * time.Minute)
+	sticks.m[key] = record
+	sticks.Unlock()
+
+	for _, tc := range []struct {
+		minutes int
+		want    string
+		why     string
+	}{{60, "last", "turn"}, {20, "first", "turn-timeout"}} {
+		prefs := settings.Load()
+		prefs.TurnAffinityMinutes = tc.minutes
+		if err := settings.Save(prefs); err != nil {
+			t.Fatal(err)
+		}
+		cs, _, aff, _ := affine(scope, provider.AffinityTurn, false, false, true, false, in, provider.Chat, body, body,
+			[]candidate{next, last}, planned{order: []Weighed{{ID: next.rest}, {ID: last.rest}}})
+		if cs[0].rest != tc.want || aff.Why != tc.why {
+			t.Fatalf("%d minutes: first route %s with affinity %+v, want %s by %s", tc.minutes, cs[0].rest, aff, tc.want, tc.why)
+		}
 	}
 }

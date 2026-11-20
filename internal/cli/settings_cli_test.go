@@ -51,6 +51,7 @@ func TestSettingsSetGetReset(t *testing.T) {
 	for _, c := range []struct{ key, value, want string }{
 		{"usageAlert", "80", "80"},
 		{"trayUsageEvery", "10", "10"},
+		{"turnAffinityMinutes", "25", "25"},
 		{"redactWords", "acme, globex", "acme,globex"},
 		{"redactWords", `["a","b"]`, "a,b"},
 		{"redactWords", "", "[]"},
@@ -81,6 +82,15 @@ func TestSettingsSetGetReset(t *testing.T) {
 	if s := settings.Load(); s.RefusalRetries != nil {
 		t.Errorf("reset refusalRetries left %d", *s.RefusalRetries)
 	}
+	if s := settings.Load(); s.TurnAffinityMinutes != 25 {
+		t.Errorf("another setting changed turn affinity to %d", s.TurnAffinityMinutes)
+	}
+	if _, err := runOut(t, "settings", "reset", "turnAffinityMinutes"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runOut(t, "settings", "get", "turnAffinityMinutes"); err != nil || strings.TrimSpace(out) != "60" {
+		t.Fatalf("reset turn affinity = %q, %v", out, err)
+	}
 }
 
 // A key or value that isn't one, and a flag where a value goes, write
@@ -95,6 +105,7 @@ func TestSettingsRefusesAndWritesNothing(t *testing.T) {
 		{"settings", "set", "usageAlert", "lots"},
 		{"settings", "set", "usageAlert", "200"}, // the save's own range
 		{"settings", "set", "trayUsageEvery", "4"},
+		{"settings", "set", "turnAffinityMinutes", "43201"},
 		{"settings", "set", "checkinAt", "25:00"},
 		{"settings", "set", "vision", "nobody/nothing"},
 		{"settings", "set", "otel", `{"bogus":1}`},

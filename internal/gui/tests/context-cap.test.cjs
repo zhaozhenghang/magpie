@@ -16,7 +16,7 @@ const { watchSettingsReads, settingsDrawn, wheelTo } = require("./reader.cjs");
 const assets = path.resolve(__dirname, "../assets");
 
 function server(lang, posted) {
-  let cur = { theme: "light", lang, tray: "panel", currency: "usd", version: "0.1.900", dir: "~/.config/magpie", gateway: "http://127.0.0.1:3425", proxyNow: "none", proxySource: "none", visionModels: [], imageGenModels: [], titleModels: [], workbuddyCheckins: [], lanURLs: [], redactWords: [], trayUsageEvery: 3, fx: { rate: 7.2, at: new Date().toISOString(), stale: false } };
+  let cur = { theme: "light", lang, tray: "panel", currency: "usd", version: "0.1.900", dir: "~/.config/magpie", gateway: "http://127.0.0.1:3425", proxyNow: "none", proxySource: "none", visionModels: [], imageGenModels: [], titleModels: [], workbuddyCheckins: [], lanURLs: [], redactWords: [], trayUsageEvery: 3, turnAffinityMinutes: 60, fx: { rate: 7.2, at: new Date().toISOString(), stale: false } };
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     const json = (data) => route.fulfill({ json: data });
@@ -37,7 +37,11 @@ function server(lang, posted) {
       return json(cur);
     }
     if (url.pathname === "/api/settings") {
-      if (req.method() === "POST") posted.push(["settings", req.postDataJSON()]);
+      if (req.method() === "POST") {
+        const body = req.postDataJSON();
+        posted.push(["settings", body]);
+        if (body.turnAffinityMinutes !== undefined) cur = { ...cur, turnAffinityMinutes: body.turnAffinityMinutes };
+      }
       return json(cur);
     }
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
@@ -103,6 +107,30 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await view(), before, "typing scrolled the page");
       assert(await row.boundingBox().then((b) => b.height < 80), "the row stays one line");
       assert.deepEqual(errors, []);
+    });
+
+    test(`${engine} ${lang}: save the global turn affinity timeout`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || "chromium" }));
+      t.after(() => browser.close());
+      const page = await browser.newPage();
+      const posted = [];
+      await page.route("**/*", server(lang, posted));
+      await watchSettingsReads(page);
+      await page.goto("http://magpie.test/?view=settings&tab=models");
+      await settingsDrawn(page);
+      const row = page.locator("#turnAffinityRow");
+      const field = row.getByRole("spinbutton", { name: lang === "zh" ? "按轮粘性时长（分钟）" : "Turn affinity timeout (minutes)" });
+      assert.equal(await field.inputValue(), "60");
+      await field.fill("-1");
+      await field.press("Enter");
+      assert.deepEqual(posted, []);
+      await field.fill("25");
+      await field.press("Enter");
+      await page.waitForFunction(() => document.querySelector("#turnAffinityRow input")?.value === "25" &&
+        !document.querySelector("#turnAffinityRow button")?.disabled);
+      assert.equal(posted.length, 1);
+      assert.equal(posted[0][0], "settings");
+      assert.equal(posted[0][1].turnAffinityMinutes, 25);
     });
   }
 }

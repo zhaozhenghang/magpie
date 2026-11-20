@@ -49,6 +49,8 @@ var Keys = []string{
 	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "imageResolution", "classifyTimeout",
 	// what every routing group does that says nothing of its own
 	"groupSink", "groupFirstToken", "groupPatience",
+	// idle timeout shared by providers and routing groups using turn affinity
+	"turnAffinityMinutes",
 	"searcher", "searcherThen", "searcherEffort", "searchFirst",
 	// updates
 	"noUpdatePill", "noAutoUpdate", "updateEvery", "noAutoDownload", "autoRestart", "updateChannel",
@@ -236,6 +238,9 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	}
 	if _, sent := fields["groupPatience"]; !sent {
 		in.GroupPatience = cur.GroupPatience
+	}
+	if _, sent := fields["turnAffinityMinutes"]; !sent {
+		in.TurnAffinityMinutes = cur.TurnAffinityMinutes
 	}
 	// nor whether animations are stilled (#3813)
 	if _, sent := fields["reduceMotion"]; !sent {

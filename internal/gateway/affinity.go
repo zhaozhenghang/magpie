@@ -41,6 +41,7 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
 
@@ -115,7 +116,7 @@ type Affinity struct {
 	// (nobody has answered it yet), "new-turn", "no-cache" (the vendor
 	// read and wrote too little of its cache to keep, or was sent too
 	// little for a cache it keeps without saying so), "cold" (too long
-	// ago), "resting", "spent", "gone" (no longer one to route to),
+	// ago), "turn-timeout" (the turn's idle limit), "resting", "spent", "gone" (no longer one to route to),
 	// "main" (a provider's fallback answered it, and the provider's own
 	// model is ready again: backToMain), "order" (a later member of a
 	// group routed In order answered it, and a member ahead is ready
@@ -589,7 +590,7 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 	if had {
 		a.Last, a.LastTurn, a.At, a.CacheRead, a.CacheWrite = st.rest, st.turn, st.at, st.cacheRead, st.cacheWrite
 	}
-	turnExpired := had && a.Within && mode == provider.AffinityTurn && pl.turnAffinityIdle > 0 && idle >= pl.turnAffinityIdle
+	turnExpired := had && a.Within && mode == provider.AffinityTurn && idle >= settings.Shared().TurnAffinityIdle()
 	// the account and the model that answered: a group with Opus and
 	// Sonnet both on one Claude account, a rule sending the turn to Opus,
 	// had the turn's next request kept to the account and so to Sonnet,
@@ -702,7 +703,7 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 	case mode == provider.AffinitySession:
 		a.Why = "session"
 	case turnExpired:
-		a.Why = "cold"
+		a.Why = "turn-timeout"
 	case a.Within:
 		a.Why = "turn"
 	case mode == provider.AffinityTurn, rotate:
@@ -753,7 +754,7 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 			cs, pl = leastHeld(scope, key, cs, pl, true)
 		}
 	}
-	// An expired turn starts from the quota order even if another model in
+	// An expired turn starts from the routing order even if another model in
 	// the same session was recently on its old route.
 	if !rotate && !turnExpired {
 		cs, pl = withSession(scope, key, sessionNamed(in), a, st, had, cs, pl)

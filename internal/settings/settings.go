@@ -658,6 +658,8 @@ type Settings struct {
 	GroupSink       bool `json:"groupSink,omitempty"`
 	GroupFirstToken int  `json:"groupFirstToken,omitempty"`
 	GroupPatience   int  `json:"groupPatience,omitempty"`
+	// TurnAffinityMinutes is the idle limit for every route set to stay within a turn.
+	TurnAffinityMinutes int `json:"turnAffinityMinutes,omitempty"`
 	// BusyLoad puts a model whose plugin reports it busier than this
 	// percent behind the others it could go to (plugin.ModelLoad,
 	// axelburks on Discord): from 1 to BusyLoadMost-1, past 100 for a
@@ -1537,6 +1539,20 @@ func (s Settings) SearchPages() int {
 // BusyLoadMost is past the highest BusyLoad: plugin.LoadMost, the most a
 // plugin's reported load is kept at, so a threshold at it moves nothing.
 const BusyLoadMost = 10000
+
+const (
+	defaultTurnAffinityMinutes = 60
+	maxTurnAffinityMinutes     = 30 * 24 * 60 // how long routing remembers the last answer
+)
+
+// TurnAffinityIdle is the time a turn can stay idle before its route is chosen again.
+func (s Settings) TurnAffinityIdle() time.Duration {
+	minutes := s.TurnAffinityMinutes
+	if minutes < 1 || minutes > maxTurnAffinityMinutes {
+		minutes = defaultTurnAffinityMinutes
+	}
+	return time.Duration(minutes) * time.Minute
+}
 
 // ClassifyTimeoutDefault is the seconds a classifier is given when
 // ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
@@ -2687,6 +2703,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if s.GroupFirstToken < 0 {
 		return fmt.Errorf("a routing group's member is given a number of seconds to its first token, or 0 to wait, not %d", s.GroupFirstToken)
 	}
+	if s.TurnAffinityMinutes < 1 || s.TurnAffinityMinutes > maxTurnAffinityMinutes {
+		return fmt.Errorf("turn affinity must be between 1 and %d minutes, not %d", maxTurnAffinityMinutes, s.TurnAffinityMinutes)
+	}
 	// provider.PatienceOff and provider.PatienceLongest, which settings
 	// can't import
 	if s.GroupPatience < -1 || s.GroupPatience > 240 {
@@ -2994,6 +3013,9 @@ func (s Settings) normal() Settings {
 	}
 	if s.UpdateEvery == 0 {
 		s.UpdateEvery = 360
+	}
+	if s.TurnAffinityMinutes == 0 {
+		s.TurnAffinityMinutes = defaultTurnAffinityMinutes
 	}
 	if s.TextSize == 0 {
 		s.TextSize = DefaultTextSize()
