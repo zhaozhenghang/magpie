@@ -35,11 +35,11 @@ const words = {
   de: { tip: "Wie Auto weiterleitet: zum Ändern klicken" },
 };
 
-function serve(lang, theme, web, posts) {
-  const state = { agents: [{ id: "codex", name: "Codex", path: "/test/codex", fields: [] }], profiles: [], settings: { lang, theme } };
+function serve(lang, theme, web, posts, pluginRouting) {
+  const state = { agents: [{ id: "codex", name: "Codex", path: "/test/codex", fields: [] }], profiles: [], settings: { lang, theme, jsRoutings: pluginRouting ? [pluginRouting] : [] } };
   const g = {
     hand: { ...base, id: "hand", name: "Hand", routing: "manual", pick: "b/flash", picked: "b/flash", affinity: "session" },
-    auto: { ...base, id: "auto", name: "Auto", routing: "order", sink: true, affinity: "turn", rules: [{ use: "c/luna", tokens: 100000 }] },
+    auto: { ...base, id: "auto", name: "Auto", routing: pluginRouting?.id || "order", disabled: !!pluginRouting, sink: true, affinity: "turn", rules: [{ use: "c/luna", tokens: 100000 }] },
   };
   const groups = () => ({ models, pools: [], groups: [
     // filler above, so that the reader scrolls down to the groups
@@ -77,7 +77,7 @@ function serve(lang, theme, web, posts) {
   };
 }
 
-async function open(t, engine, { lang, theme = "light", web = true, width = 1100 }) {
+async function open(t, engine, { lang, theme = "light", web = true, width = 1100, pluginRouting }) {
   const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
   t.after(() => browser.close());
   const page = await (await browser.newContext({ viewport: { width, height: 700 } })).newPage();
@@ -85,7 +85,7 @@ async function open(t, engine, { lang, theme = "light", web = true, width = 1100
   page.setDefaultNavigationTimeout(60000);
   const errors = [], posts = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.route("**/*", serve(lang, theme, web, posts));
+  await page.route("**/*", serve(lang, theme, web, posts, pluginRouting));
   await page.goto("http://magpie.test/?view=groups");
   await page.locator(".rt-group", { hasText: "Auto" }).waitFor();
   return { page, errors, posts };
@@ -109,6 +109,28 @@ const shot = async (page, name) => {
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: a disabled group can switch away from a JS routing and back after reload`, async (t) => {
+    const pluginRouting = { id: "spread/fewest", name: "fewest", plugin: "spread" };
+    const { page, errors, posts } = await open(t, engine, { lang: "zh", web: false, pluginRouting });
+    const card = page.locator('.rt-group[data-id="auto"]');
+    const btn = card.locator(".rt-groute");
+    const pick = async (name) => {
+      await wheelTo(page, card, 1100);
+      await btn.click();
+      const item = page.locator(".proto-menu").getByRole("menuitemradio", { name, exact: true });
+      await item.evaluate((b) => b.scrollIntoView({ block: "nearest" }));
+      await item.click();
+      await btn.getByText(name, { exact: true }).waitFor();
+    };
+    await btn.getByText(pluginRouting.id, { exact: true }).waitFor();
+    await pick(words.zh.weight);
+    await page.reload();
+    await btn.getByText(words.zh.weight, { exact: true }).waitFor();
+    await pick(pluginRouting.id);
+    assert.deepEqual(posts.map(({ body }) => body.routing), ["weight", pluginRouting.id]);
+    assert.deepEqual(errors, []);
+  });
+
   for (const lang of ["en", "zh"]) {
     const w = words[lang];
     for (const theme of ["light", "dark"]) {

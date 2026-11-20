@@ -82,7 +82,7 @@ func keepState(s stateJSON) {
 func keptFile(s stateJSON) stateFile {
 	// kept as it is sent, each option list once
 	s = shareOptions(s)
-	s.Settings = settings.Settings{}
+	s.Settings = stateSettingsJSON{}
 	// and what is told once: a notice, a file recovered after a crash
 	s.Notice, s.Connected, s.Recovered = "", nil, nil
 	// and the magpie serving the gateway now, which the next start asks

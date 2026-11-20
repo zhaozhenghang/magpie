@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/middleware"
+	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -17,6 +19,60 @@ func forgetLastState() {
 	lastState.Lock()
 	lastState.kept, lastState.read = nil, false
 	lastState.Unlock()
+}
+
+func TestStateListsActivePluginRoutings(t *testing.T) {
+	sandboxHome(t)
+	forgetLastState()
+	t.Cleanup(forgetLastState)
+	src := filepath.Join(t.TempDir(), "spread.gateway.js")
+	if err := os.WriteFile(src, []byte(`export const strategies = { fewest: (pool, seats) => seats.map((_, i) => i) };`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err := json.Marshal(plugin.List{Plugins: []plugin.Entry{{Spec: src}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(settings.Dir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(settings.Dir(), "plugins.json"), list, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	middleware.Reload()
+	t.Cleanup(middleware.Reload)
+	stop := middleware.Points().(interface{ Serve() func() }).Serve()
+	t.Cleanup(stop)
+
+	srv := Handler(nil, nil)
+	routings := func(path string) []middleware.Routing {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		var out struct {
+			Settings struct {
+				JSRoutings []middleware.Routing `json:"jsRoutings"`
+			} `json:"settings"`
+		}
+		if rec.Code != 200 {
+			t.Fatalf("%s returned HTTP %d", path, rec.Code)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Settings.JSRoutings
+	}
+	for _, path := range []string{"/api/state", "/api/state?last=1"} {
+		if got := routings(path); len(got) != 1 || got[0].ID != "spread/fewest" {
+			t.Errorf("%s: active routings = %+v", path, got)
+		}
+	}
+	stop()
+	for _, path := range []string{"/api/state", "/api/state?last=1"} {
+		if got := routings(path); len(got) != 0 {
+			t.Errorf("%s: inactive routings = %+v", path, got)
+		}
+	}
 }
 
 // #1519: the Agents page draws the state kept from the last read at once

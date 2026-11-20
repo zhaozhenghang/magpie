@@ -326,7 +326,7 @@ type stateJSON struct {
 	// from saving its files (a ~/.config sudo left root's), which the
 	// window offers to make theirs again; "" when magpie can save
 	ConfigBlocked string            `json:"configBlocked,omitempty"`
-	Settings      settings.Settings `json:"settings"`
+	Settings      stateSettingsJSON `json:"settings"`
 	// FX is the dollar-to-yuan rate the cny currency choice shows costs at,
 	// here too (not only in settingsJSON) so a cost drawn before the reader
 	// ever opens Settings already converts, if cny was chosen last time.
@@ -424,9 +424,16 @@ func currentFX() fxJSON {
 	return out
 }
 
+type stateSettingsJSON struct {
+	settings.Settings
+	// JSRoutings are the routings JS gateway plugins serve now
+	// ("<plugin>/<name>"), for the routing pickers.
+	JSRoutings []middleware.Routing `json:"jsRoutings"`
+}
+
 // settingsJSON is the Settings page: the two choices plus the facts it shows.
 type settingsJSON struct {
-	settings.Settings
+	stateSettingsJSON
 	Version string `json:"version"`
 	Dir     string `json:"dir"`     // where magpie keeps its files, as shown
 	Gateway string `json:"gateway"` // the local endpoint
@@ -436,9 +443,6 @@ type settingsJSON struct {
 	// PanelKeys is whether the quick panel's shortcut can be set here
 	// (panelkey.go)
 	PanelKeys panelKeysJSON `json:"panelKeys"`
-	// JSRoutings are the routings JS gateway plugins serve now
-	// ("<plugin>/<name>"), for the routing pickers
-	JSRoutings []middleware.Routing `json:"jsRoutings"`
 	// PublicURL is MAGPIE_PUBLIC_URL while other machines are let in
 	// (shared, or MAGPIE_ADDR on the network): where they reach the
 	// gateway, shown beside the local address agents here are pointed at
@@ -867,13 +871,15 @@ func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
 }
 
 func settingsState() settingsJSON {
-	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
+	s := settingsJSON{
+		stateSettingsJSON: stateSettingsJSON{Settings: settings.Load(), JSRoutings: middleware.Routings()},
+		Version:           Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL(),
+	}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
 	s.NameEnv = settings.EnvName()
 	s.Log = tilde(applog.Current())
 	s.Builtins = builtinsState()
 	s.PanelKeys = panelKeysState()
-	s.JSRoutings = middleware.Routings()
 	s.OnNetwork = gateway.OnNetwork()
 	if list, env := gateway.AllowIPs(); env {
 		s.AllowIPsEnv, s.AllowIPsFromEnv = os.Getenv(gateway.AllowIPsEnv), list
@@ -3379,22 +3385,20 @@ func held(h http.Handler) http.Handler {
 	})
 }
 
-// stateSettings is s without the credentials Settings' own read keeps on
-// disk (settingsState), for /api/state, which is polled, and the start's
-// read of the last one (lastKnown), which puts today's settings in it
-func stateSettings(s settings.Settings) settings.Settings {
+// stateSettings adds live routing choices to the settings sent without
+// credentials, both on each /api/state poll and in the last-known state.
+func stateSettings(s settings.Settings) stateSettingsJSON {
 	s.Proxies, s.LANKey, s.BarkKey, s.GitHubToken = nil, "", "", ""
-	return s
+	return stateSettingsJSON{Settings: s, JSRoutings: middleware.Routings()}
 }
 
 func state() stateJSON {
-	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Shared()} // only encoded, never changed
-	s.Settings = stateSettings(s.Settings)
+	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: stateSettings(settings.Shared())}
 	// state() is asked for after nearly every click, so the rate — a
 	// network fetch once every TTL — is only worth its rare latency when
 	// cny is actually chosen; usd never looks at it
 	if s.Settings.Currency != "usd" {
-		s.FX = costFX(s.Settings)
+		s.FX = costFX(s.Settings.Settings)
 	}
 	s.Unlisted = unlistedModels()
 	s.CLIBehind = cliBehind()
