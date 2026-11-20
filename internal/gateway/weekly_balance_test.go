@@ -202,6 +202,10 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 		a.weekly.Store(41) // its week is 0.9 points ahead of the target relative to remote-b
 		provider.ForgetRemoteCardsForTest()
 		provider.RemoteCards(context.Background())
+		other, err := provider.Find("remote-b")
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, tc := range []struct {
 			name, want, why string
 			idle            time.Duration
@@ -227,17 +231,22 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			st.at = st.at.Add(-tc.idle)
 			sticks.m[key] = st
 			sticks.Unlock()
+			answered(stickKey("group/other", h, []byte(first)),
+				candidate{p: *other, model: model, rest: other.ID}, 1, Usage{CacheRead: 500_000})
 			ask(t, tc.name, first, tc.want)
 			if aff := lastRoute(s).Affinity; aff == nil || aff.Within || aff.Why != tc.why || aff.Kept != (tc.why == "cache") {
 				t.Fatalf("%s: affinity = %+v, want %s", tc.name, aff, tc.why)
 			}
 		}
-		ask(t, "new session with close weekly progress", first, "remote-b")
+		h := make(http.Header)
+		h.Set("x-session-id", "new conversation in this group")
+		answered(stickKey("group/other", h, []byte(first)),
+			candidate{p: *last, model: model, rest: last.ID}, 1, Usage{CacheRead: 500_000})
+		ask(t, "new conversation in this group", first, "remote-b")
 
 		a.weekly.Store(50)
 		provider.ForgetRemoteCardsForTest()
 		provider.RemoteCards(context.Background())
-		h := make(http.Header)
 		h.Set("x-session-id", "large weekly gap")
 		key := stickKey("group/weekly", h, []byte(first))
 		answered(key, candidate{p: *last, model: model, rest: last.ID}, 1, Usage{CacheRead: 400_000})

@@ -16,13 +16,13 @@ const weeklyQuotaWait = 6 * time.Second
 
 // weeklyCacheHolds compares the selected seat to the last answerer after
 // native routing has applied caps, access, fallbacks and protocol fit.
-func weeklyCacheHolds(routing, scope string, from provider.Protocol, cs []candidate, order []Weighed, at int, last stick) bool {
-	if routing != routes.WeeklyBalance || at <= 0 {
+func weeklyCacheHolds(scope string, from provider.Protocol, cs []candidate, order []Weighed, at int, last stick) bool {
+	if at <= 0 {
 		return false
 	}
 	next, previous := order[0], order[at]
 	c := cs[at]
-	if next.Routing != routing || previous.Routing != routing ||
+	if next.Routing != routes.WeeklyBalance || previous.Routing != routes.WeeklyBalance ||
 		next.WeeklyQuotaFresh == nil || previous.WeeklyQuotaFresh == nil ||
 		next.Fallback != previous.Fallback || previous.Sunk != nil ||
 		keyFit(cs[0].p, cs[0].model, from) != keyFit(c.p, c.model, from) ||
@@ -30,7 +30,7 @@ func weeklyCacheHolds(routing, scope string, from provider.Protocol, cs []candid
 		!cacheHolds(last, c.p) {
 		return false
 	}
-	strategy, ok := routes.Find(routing)
+	strategy, ok := routes.Find(routes.WeeklyBalance)
 	if !ok || strategy.Order == nil {
 		return false
 	}

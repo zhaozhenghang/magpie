@@ -41,6 +41,7 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/routes"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -592,6 +593,7 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 	}
 	pastTurnIdle := had && mode == provider.AffinityTurn && idle >= settings.Shared().TurnAffinityIdle()
 	turnExpired := a.Within && pastTurnIdle
+	weeklyTurn := mode == provider.AffinityTurn && pl.routing == routes.WeeklyBalance
 	// the account and the model that answered: a group with Opus and
 	// Sonnet both on one Claude account, a rule sending the turn to Opus,
 	// had the turn's next request kept to the account and so to Sonnet,
@@ -707,7 +709,7 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 		a.Why = "turn-timeout"
 	case a.Within:
 		a.Why = "turn"
-	case mode == provider.AffinityTurn && !pastTurnIdle && weeklyCacheHolds(pl.routing, scope, from, cs, pl.order, at, st):
+	case weeklyTurn && !pastTurnIdle && weeklyCacheHolds(scope, from, cs, pl.order, at, st):
 		a.Why = "cache"
 	case mode == provider.AffinityTurn, rotate:
 		a.Why = "new-turn"
@@ -757,9 +759,9 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 			cs, pl = leastHeld(scope, key, cs, pl, true)
 		}
 	}
-	// An expired turn starts from the routing order even if another model in
-	// the same session was recently on its old route.
-	if !rotate && !turnExpired {
+	// An expired turn starts from its routing order. Weekly Balance's turn
+	// mode only keeps a cache from this pool's own conversation.
+	if !rotate && !turnExpired && !weeklyTurn {
 		cs, pl = withSession(scope, key, sessionNamed(in), a, st, had, cs, pl)
 	}
 	return cs, pl, a, key
