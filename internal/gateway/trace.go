@@ -316,6 +316,8 @@ type SeatPrice struct {
 
 // Weighed is one account or key as routing weighed it.
 type Weighed struct {
+	rankPool string
+	priority int
 	ID       string  `json:"id"` // what rests after a failure
 	Provider string  `json:"provider"`
 	Name     string  `json:"name"` // the provider's
@@ -608,8 +610,6 @@ type AutoReset struct {
 
 type planned struct {
 	order, left []Weighed
-	// routing is the strategy of the requested pool as affinity sees it.
-	routing string
 	// held: the accounts left out (in left) as they won't spend their
 	// credits, for one that spends its resets by itself to spend one
 	held []candidate
@@ -629,6 +629,9 @@ type planned struct {
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
 	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast, Ultra: c.fast && c.ultra,
 		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL, Reserve: c.reserve, UseFirst: c.p.UseFirst}
+	if wg.priority != nil {
+		w.rankPool, w.priority = wg.rankPool, wg.priority[c.seat()]
+	}
 	switch {
 	case c.p.Account != nil:
 		w.Kind, w.Who, w.Agent, w.Plan = "account", c.p.Account.User, c.p.Account.Agent, c.p.Account.Plan

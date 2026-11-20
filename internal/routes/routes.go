@@ -73,8 +73,6 @@ type Seat struct {
 	Tokens float64
 	// QuotaWindows are dated allowance readings that count the seat's model.
 	QuotaWindows []provider.RoutingQuotaWindow
-	// CacheWarm marks the previous answerer in a cache-aware comparison.
-	CacheWarm bool
 	// Free: the model this seat would be asked for costs nothing on it —
 	// its vendor serves that model at no cost to the subscription's
 	// allowance or credits (catalog.Model's Free). FreeFirst goes by it.
@@ -127,6 +125,13 @@ type Seat struct {
 
 const WeeklyBalance = "weekly-balance/weekly-balance"
 
+// Ranking orders candidates and optionally identifies equally preferred
+// seats by input index. A zero priority does not opt a seat into spreading.
+type Ranking struct {
+	Order    []int `json:"order"`
+	Priority []int `json:"priority,omitempty"`
+}
+
 // Strategy orders a pool.
 type Strategy struct {
 	// Order is the order to try seats in: a permutation of their indexes.
@@ -134,6 +139,8 @@ type Strategy struct {
 	// strategy that keeps a round per pool. It is asked with two seats or
 	// more.
 	Order func(pool string, seats []Seat) []int
+	// Rank is Order with optional priority classes for native burst spreading.
+	Rank func(pool string, seats []Seat) Ranking
 	// Exact: its order stands as it says. Otherwise, of a provider's API
 	// keys, those that fit the request better go first, each kept in its
 	// order among those alike.
@@ -211,14 +218,24 @@ func Served(routing string) bool {
 // permutation of them, or a strategy that panics, leaves them in their
 // listed order, logged. A strategy only orders, so failing it fails open:
 // every route is still tried.
-func Apply(s Strategy, pool string, seats []Seat) (order []int) {
+func Apply(s Strategy, pool string, seats []Seat) []int {
+	return Rank(s, pool, seats).Order
+}
+
+// Rank is Apply with validated optional priorities for the same seats.
+func Rank(s Strategy, pool string, seats []Seat) (rank Ranking) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("routes: %s's strategy panicked: %v", pool, r)
-			order = identity(len(seats))
+			rank = Ranking{Order: identity(len(seats))}
 		}
 	}()
-	order = s.Order(pool, seats)
+	if s.Rank != nil {
+		rank = s.Rank(pool, seats)
+	} else {
+		rank.Order = s.Order(pool, seats)
+	}
+	order := rank.Order
 	seen := make([]bool, len(seats))
 	ok := len(order) == len(seats)
 	for _, i := range order {
@@ -230,7 +247,10 @@ func Apply(s Strategy, pool string, seats []Seat) (order []int) {
 	}
 	if !ok {
 		log.Printf("routes: %s's strategy gave %v for %d routes; trying them in order", pool, order, len(seats))
-		return identity(len(seats))
+		return Ranking{Order: identity(len(seats))}
 	}
-	return order
+	if len(rank.Priority) != len(seats) || slices.ContainsFunc(rank.Priority, func(n int) bool { return n < 0 || n > len(seats) }) {
+		rank.Priority = nil
+	}
+	return rank
 }

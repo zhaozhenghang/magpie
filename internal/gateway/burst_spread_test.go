@@ -91,13 +91,16 @@ func burstPost(t *testing.T, s *Server, how string, i int) {
 }
 
 // #5242 through a routing group: its members' keys weighed together, and
-// a group of one provider's three keys, routed In turn and By pace.
+// a group of one provider's three keys, routed In turn, By pace or Weekly Balance.
 func TestABurstSpreadsOverAGroup(t *testing.T) {
 	const n = 6
-	for _, routing := range []string{provider.Rotate, provider.Pace} {
+	for _, routing := range []string{provider.Rotate, provider.Pace, routes.WeeklyBalance} {
 		for _, shape := range []string{"three providers", "one provider's keys"} {
 			t.Run(routing+"/"+shape, func(t *testing.T) {
 				fresh(t)
+				if routing == routes.WeeklyBalance {
+					serveWeeklyBalance(t)
+				}
 				h := &held{want: n, all: make(chan struct{}), tried: map[string]int{}}
 				members := []string{"ag/m1"}
 				if shape == "three providers" {
@@ -132,6 +135,9 @@ func TestABurstSpreadsOverAGroup(t *testing.T) {
 				for _, k := range []string{"k1", "k2", "k3"} {
 					if h.tried[k] == 0 {
 						t.Errorf("%s got none of %d requests sent at once: %v", k, n, h.tried)
+					}
+					if routing == routes.WeeklyBalance && h.tried[k] != n/3 {
+						t.Errorf("equal weekly priorities should split %d requests equally: %v", n, h.tried)
 					}
 				}
 			})

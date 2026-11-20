@@ -2562,6 +2562,8 @@ func route(p provider.Provider, cs []candidate, model string, from provider.Prot
 type weighing struct {
 	weeklyMaxAge time.Duration
 	lefts        map[allowanceKey]left // the allowance of each account and model
+	rankPool     string
+	priority     map[string]int
 
 	tokens map[string]float64 // least used: tokens each served lately
 
@@ -2874,9 +2876,15 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			wg.window[c.restID()] = seats[i].Window
 		}
 	}
-	order := routes.Apply(st, p.ID, seats)
+	rank := routes.Rank(st, p.ID, seats)
+	if len(rank.Priority) != 0 {
+		wg.rankPool, wg.priority = p.ID, make(map[string]int, len(cs))
+		for i, c := range cs {
+			wg.priority[c.seat()] = rank.Priority[i]
+		}
+	}
 	out := make([]candidate, 0, len(cs))
-	for _, i := range order {
+	for _, i := range rank.Order {
 		out = append(out, cs[i])
 	}
 	cs = out

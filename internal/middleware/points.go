@@ -211,23 +211,22 @@ type seatJSON struct {
 	Resting      bool                          `json:"resting"`
 	Tokens       float64                       `json:"tokens"`
 	QuotaWindows []provider.RoutingQuotaWindow `json:"quotaWindows,omitempty"`
-	CacheWarm    bool                          `json:"cacheWarm,omitempty"`
 }
 
 var errBusy = errors.New("its runtime was busy past the time a strategy has")
 
 // strategy is s of m as the router's strategy point takes it.
 func (m *mw) strategy(s strat) routes.Strategy {
-	strategy := routes.Strategy{ByQuota: true, Order: func(pool string, seats []routes.Seat) []int {
-		order, err := m.order(s.h, pool, seats)
+	strategy := routes.Strategy{ByQuota: true, Rank: func(pool string, seats []routes.Seat) routes.Ranking {
+		rank, err := m.order(s.h, pool, seats)
 		if err != nil {
 			m.fail("strategies."+s.name, err)
-			order = make([]int, len(seats))
-			for i := range order {
-				order[i] = i
+			rank.Order = make([]int, len(seats))
+			for i := range rank.Order {
+				rank.Order[i] = i
 			}
 		}
-		return order
+		return rank
 	}}
 	if m.routing(s.name) == routes.WeeklyBalance {
 		var options struct {
@@ -244,7 +243,7 @@ func (m *mw) strategy(s strat) routes.Strategy {
 }
 
 // order asks h for seats' order, checked to be a permutation of them.
-func (m *mw) order(h moejs.Hook, pool string, seats []routes.Seat) ([]int, error) {
+func (m *mw) order(h moejs.Hook, pool string, seats []routes.Seat) (routes.Ranking, error) {
 	start := time.Now()
 	list := make([]seatJSON, len(seats))
 	for i, s := range seats {
@@ -254,48 +253,58 @@ func (m *mw) order(h moejs.Hook, pool string, seats []routes.Seat) ([]int, error
 		}
 		list[i] = seatJSON{Key: s.Key, Account: s.Account, Known: s.Known, Learns: s.Learns,
 			Used: s.Used, Soon: soon, Pace: s.Pace, Weight: s.Weight, Resting: s.Resting,
-			Tokens: s.Tokens, QuotaWindows: s.QuotaWindows, CacheWarm: s.CacheWarm}
+			Tokens: s.Tokens, QuotaWindows: s.QuotaWindows}
 	}
 	b, err := json.Marshal(list)
 	if err != nil {
-		return nil, err
+		return routes.Ranking{}, err
 	}
 	p := m.pt
 	if !p.take(strategyLimit) {
-		return nil, errBusy
+		return routes.Ranking{}, errBusy
 	}
 	defer p.give()
 	rt := p.in.rt
 	poolV, err := rt.FromGo(pool)
 	if err != nil {
-		return nil, err
+		return routes.Ranking{}, err
 	}
 	seatsV, err := rt.ParseJSON(b)
 	if err != nil {
-		return nil, err
+		return routes.Ranking{}, err
 	}
 	optsV, err := rt.ParseJSON(m.options)
 	if err != nil {
-		return nil, err
+		return routes.Ranking{}, err
 	}
 	v, err := p.in.call(h, strategyLimit-time.Since(start), poolV, seatsV, optsV)
 	m.orders.Add(1)
 	if err != nil {
-		return nil, err
+		return routes.Ranking{}, err
 	}
-	var list2 []*float64
+	var result struct {
+		Order    []*float64 `json:"order"`
+		Priority []int      `json:"priority"`
+	}
 	out, err := rt.AppendJSON(nil, v)
-	if err != nil || json.Unmarshal(out, &list2) != nil || len(list2) != len(seats) {
-		return nil, fmt.Errorf("returned %s, not an order of its %d seats", p.in.text(v), len(seats))
+	if err == nil && len(out) > 0 {
+		if out[0] == '{' {
+			err = json.Unmarshal(out, &result)
+		} else {
+			err = json.Unmarshal(out, &result.Order)
+		}
+	}
+	if err != nil || len(result.Order) != len(seats) {
+		return routes.Ranking{}, fmt.Errorf("returned %s, not an order of its %d seats", p.in.text(v), len(seats))
 	}
 	order, seen := make([]int, len(seats)), make([]bool, len(seats))
-	for i, x := range list2 {
+	for i, x := range result.Order {
 		if x == nil || *x != math.Trunc(*x) || *x < 0 || int(*x) >= len(seats) || seen[int(*x)] {
-			return nil, fmt.Errorf("returned %s, not an order of its %d seats", p.in.text(v), len(seats))
+			return routes.Ranking{}, fmt.Errorf("returned %s, not an order of its %d seats", p.in.text(v), len(seats))
 		}
 		order[i], seen[int(*x)] = int(*x), true
 	}
-	return order, nil
+	return routes.Ranking{Order: order, Priority: result.Priority}, nil
 }
 
 // usageRow is what onUsage is given of a ledger row: who asked, whom, for

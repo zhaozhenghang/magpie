@@ -1,6 +1,5 @@
 const hour = 60 * 60 * 1000;
 const week = 7 * 24 * hour;
-const cacheTolerancePoints = 2;
 
 function option(value, fallback, minimum, maximum) {
   return Number.isFinite(value) && value >= minimum && value <= maximum ? value : fallback;
@@ -34,23 +33,23 @@ function weeklyBalance(_pool, seats, options) {
     unavailable: seat.resting || seat.used >= 100,
     weekly: weeklyProgress(seat, now, maxAge, target),
     tokens: seat.tokens || 0,
-    cacheWarm: seat.cacheWarm,
   }));
 
-  order.sort((a, b) => {
+  const compare = (a, b) => {
     if (a.unavailable !== b.unavailable) return a.unavailable ? 1 : -1;
-    if (a.unavailable) return a.index - b.index;
-    if (a.weekly === null && b.weekly === null) return a.tokens - b.tokens || a.index - b.index;
+    if (a.unavailable) return 0;
+    if (a.weekly === null && b.weekly === null) return a.tokens - b.tokens;
     if (a.weekly === null || b.weekly === null) return a.weekly === null ? 1 : -1;
-    return a.weekly - b.weekly || a.index - b.index;
-  });
-  const first = order[0];
-  const warm = order.findIndex(item => item.cacheWarm && !item.unavailable &&
-    (item.weekly === null || first.weekly === null
-      ? item.weekly === first.weekly
-      : item.weekly - first.weekly <= cacheTolerancePoints));
-  if (warm > 0) order.unshift(...order.splice(warm, 1));
-  return order.map(item => item.index);
+    return a.weekly - b.weekly;
+  };
+  order.sort((a, b) => compare(a, b) || a.index - b.index);
+  const priority = seats.map(() => 0);
+  let rank = 0;
+  for (let i = 0; i < order.length && !order[i].unavailable; i++) {
+    if (i === 0 || compare(order[i - 1], order[i]) !== 0) rank++;
+    priority[order[i].index] = rank;
+  }
+  return { order: order.map(item => item.index), priority };
 }
 
 export const strategies = { "weekly-balance": weeklyBalance };

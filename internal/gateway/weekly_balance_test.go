@@ -22,11 +22,8 @@ import (
 	"github.com/yetone/magpie/internal/settings"
 )
 
-func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
-	fresh(t)
-	t.Setenv("MAGPIE_ADDR", "")
-	provider.ForgetRemoteCardsForTest()
-	t.Cleanup(provider.ForgetRemoteCardsForTest)
+func serveWeeklyBalance(t *testing.T) string {
+	t.Helper()
 	src, err := filepath.Abs("../../contrib/weekly-balance/weekly-balance.gateway.js")
 	if err != nil {
 		t.Fatal(err)
@@ -49,11 +46,21 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	})
 	middleware.Reload()
 	stop := middleware.Points().(interface{ Serve() func() }).Serve()
-	defer stop()
-	const strategy = "weekly-balance/weekly-balance"
+	t.Cleanup(stop)
+	const strategy = routes.WeeklyBalance
 	if !routes.Served(strategy) {
 		t.Fatal("the plugin strategy is unavailable:", middleware.States()[src])
 	}
+	return src
+}
+
+func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	provider.ForgetRemoteCardsForTest()
+	t.Cleanup(provider.ForgetRemoteCardsForTest)
+	src := serveWeeklyBalance(t)
+	const strategy = routes.WeeklyBalance
 
 	const model = "claude/claude-sonnet-5-5"
 	now := time.Now()
@@ -62,12 +69,10 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	type remoteState struct {
 		limited, stale atomic.Bool
 		refreshes      atomic.Int32
-		weekly         atomic.Int32
 	}
 	addRemote := func(id string, used, short float64, until time.Duration) *remoteState {
 		t.Helper()
 		state := &remoteState{}
-		state.weekly.Store(int32(used))
 		reset := now.Add(until)
 		cards := func() []provider.SubscriptionQuota {
 			at := read
@@ -78,7 +83,7 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 				Provider: "claude", Kind: "subscription", User: id + "@example.invalid",
 				ReadAt: &at, Windows: []provider.QuotaWindow{
 					{Name: "5 hours", Span: 5 * time.Hour, Used: short, ResetsAt: &shortReset},
-					{Name: "7 days", Span: 7 * 24 * time.Hour, Used: float64(state.weekly.Load()), ResetsAt: &reset},
+					{Name: "7 days", Span: 7 * 24 * time.Hour, Used: used, ResetsAt: &reset},
 				},
 			}})
 		}
@@ -145,7 +150,7 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 		t.Helper()
 		code, body := postAs(t, s, session, request)
 		if code != http.StatusOK || !strings.Contains(body, "served by "+want) {
-			t.Fatalf("want %s, got %d %s, strategy state %+v", want, code, body, middleware.States()[src])
+			t.Fatalf("want %s, got %d %s, affinity %+v, strategy state %+v", want, code, body, lastRoute(s).Affinity, middleware.States()[src])
 		}
 	}
 	const first = `{"model":"group/weekly","messages":[{"role":"user","content":"test"}]}`
@@ -198,63 +203,63 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			}
 		})
 	}
-	t.Run("weekly cache preference across turns", func(t *testing.T) {
-		a.weekly.Store(41) // its week is 0.9 points ahead of the target relative to remote-b
-		provider.ForgetRemoteCardsForTest()
-		provider.RemoteCards(context.Background())
-		other, err := provider.Find("remote-b")
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, tc := range []struct {
-			name, want, why string
-			idle            time.Duration
-			usage           Usage
-			minutes         int
-		}{
-			{"warm cache and close weekly progress", "remote-a", "cache", time.Minute, Usage{CacheRead: 400_000}, 60},
-			{"small cache", "remote-b", "new-turn", time.Minute, Usage{CacheRead: 20}, 60},
-			{"cache expired", "remote-b", "new-turn", 6 * time.Minute, Usage{CacheRead: 400_000}, 60},
-			{"global idle limit expires first", "remote-b", "new-turn", 2 * time.Minute, Usage{CacheRead: 400_000}, 1},
-		} {
-			prefs := settings.Load()
-			prefs.TurnAffinityMinutes = tc.minutes
-			if err := settings.Save(prefs); err != nil {
+	for _, routing := range []string{"", strategy} {
+		t.Run("native auto affinity/"+routing, func(t *testing.T) {
+			auto := group
+			auto.ID = "auto-weekly"
+			if routing == "" {
+				auto.ID = "auto-smart"
+			}
+			auto.Routing, auto.Affinity = routing, ""
+			scope := "group/" + auto.ID
+			body := strings.Replace(first, "group/weekly", scope, 1)
+			if err := provider.SaveGroup(auto); err != nil {
 				t.Fatal(err)
 			}
-			h := make(http.Header)
-			h.Set("x-session-id", tc.name)
-			key := stickKey("group/weekly", h, []byte(first))
-			answered(key, candidate{p: *last, model: model, rest: last.ID}, 1, tc.usage)
-			sticks.Lock()
-			st := sticks.m[key]
-			st.at = st.at.Add(-tc.idle)
-			sticks.m[key] = st
-			sticks.Unlock()
-			answered(stickKey("group/other", h, []byte(first)),
-				candidate{p: *other, model: model, rest: other.ID}, 1, Usage{CacheRead: 500_000})
-			ask(t, tc.name, first, tc.want)
-			if aff := lastRoute(s).Affinity; aff == nil || aff.Within || aff.Why != tc.why || aff.Kept != (tc.why == "cache") {
-				t.Fatalf("%s: affinity = %+v, want %s", tc.name, aff, tc.why)
+			code, response := postAs(t, s, "new:"+routing, body)
+			if code != http.StatusOK {
+				t.Fatalf("new conversation: %d %s", code, response)
 			}
-		}
-		h := make(http.Header)
-		h.Set("x-session-id", "new conversation in this group")
-		answered(stickKey("group/other", h, []byte(first)),
-			candidate{p: *last, model: model, rest: last.ID}, 1, Usage{CacheRead: 500_000})
-		ask(t, "new conversation in this group", first, "remote-b")
-
-		a.weekly.Store(50)
-		provider.ForgetRemoteCardsForTest()
-		provider.RemoteCards(context.Background())
-		h.Set("x-session-id", "large weekly gap")
-		key := stickKey("group/weekly", h, []byte(first))
-		answered(key, candidate{p: *last, model: model, rest: last.ID}, 1, Usage{CacheRead: 400_000})
-		ask(t, "large weekly gap", first, "remote-b")
-		if aff := lastRoute(s).Affinity; aff == nil || aff.Why != "new-turn" || aff.Kept {
-			t.Fatalf("large weekly gap: affinity = %+v", aff)
-		}
-	})
+			lead := lastRoute(s).Order[0].Provider
+			if routing == strategy && lead != "remote-b" {
+				t.Fatalf("weekly progress should prefer remote-b, got %s", lead)
+			}
+			previous := "remote-a"
+			if lead == previous {
+				previous = "remote-b"
+			}
+			p, err := provider.Find(previous)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				name, want, why string
+				idle            time.Duration
+				usage           Usage
+			}{
+				{"warm", previous, "cache", time.Minute, Usage{CacheRead: 400_000}},
+				{"hour cache", previous, "cache", 20 * time.Minute, Usage{CacheWrite: 400_000, CacheWrite1h: 400_000}},
+				{"small", lead, "no-cache", time.Minute, Usage{CacheRead: 20}},
+				{"cold", lead, "cold", 6 * time.Minute, Usage{CacheRead: 400_000}},
+			} {
+				session := tc.name + ":" + routing
+				h := make(http.Header)
+				h.Set("x-session-id", session)
+				key := stickKey(scope, h, []byte(body))
+				answered(key, candidate{p: *p, model: model, rest: p.ID}, 1, tc.usage)
+				sticks.Lock()
+				st := sticks.m[key]
+				st.at = st.at.Add(-tc.idle)
+				st.hour.at = st.hour.at.Add(-tc.idle)
+				sticks.m[key] = st
+				sticks.Unlock()
+				ask(t, session, body, tc.want)
+				if aff := lastRoute(s).Affinity; aff == nil || aff.Within || aff.Why != tc.why || aff.Kept != (tc.why == "cache") {
+					t.Fatalf("%s: affinity = %+v, want %s", tc.name, aff, tc.why)
+				}
+			}
+		})
+	}
 	b.stale.Store(true)
 	provider.ForgetRemoteCardsForTest()
 	provider.RemoteCards(context.Background())
@@ -341,6 +346,23 @@ func TestWeeklyQuotaWaitHonorsRequestDeadline(t *testing.T) {
 	t.Cleanup(routes.Register(routes.WeeklyBalance, routes.Strategy{ByQuota: true, QuotaMaxAge: age}))
 	group := provider.Group{ID: "weekly", Routing: routes.WeeklyBalance}
 	members := []provider.Member{{Provider: remote, Model: model}, {Model: "local"}}
+
+	const body = `{"messages":[{"role":"user","content":"next turn"}]}`
+	h := http.Header{"X-Session-Id": {"warm"}}
+	answered(stickKey("group/weekly", h, []byte(body)), candidate{p: remote, model: model, rest: remote.ID}, 1, Usage{CacheRead: 2000})
+	returned := make(chan struct{})
+	go func() {
+		prepareWeeklyQuota(context.Background(), group, members, "group/weekly", h, provider.Chat, []byte(body), []byte(body))
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		unblock()
+		<-returned
+		t.Fatal("a warm Auto conversation waited for a stale quota read")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	prepareWeeklyQuota(ctx, group, members, "group/weekly", nil, provider.Chat, nil, nil)

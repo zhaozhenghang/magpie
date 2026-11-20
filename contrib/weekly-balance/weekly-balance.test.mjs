@@ -5,7 +5,8 @@ import { strategies } from "./weekly-balance.gateway.js";
 const hour = 3_600_000;
 const week = 168 * hour;
 const at = Date.parse("2026-11-19T18:30:00+08:00");
-const route = (seats, options = {}) => strategies["weekly-balance"]("group/claude", seats, options);
+const rank = (seats, options = {}) => strategies["weekly-balance"]("group/claude", seats, options);
+const route = (seats, options) => rank(seats, options).order;
 
 function seat(now, weeklyUsed, weeklyReset, shortUsed, overrides = {}) {
   return {
@@ -42,32 +43,16 @@ test("a small weekly lead beats a lower 5h reading without overriding a hard cap
   assert.deepEqual(route([ntt, dmit]), [0, 1]);
 });
 
-test("reuses a warm cache within two weekly points and still corrects meaningful gaps", t => {
+test("reports ties without promoting a lower priority or unavailable candidate", t => {
   t.mock.method(Date, "now", () => at);
   const reset = at + 36 * hour;
-  const lead = seat(at, 38, reset, 15);
-  const warm = seat(at, 40, reset, 55, { cacheWarm: true });
-  const third = seat(at, 43, reset, 5);
-  assert.deepEqual(route([lead, third, warm]), [2, 0, 1]);
-  warm.quotaWindows[1].used = 41;
-  assert.deepEqual(route([lead, third, warm]), [0, 2, 1]);
-  warm.quotaWindows[1].used = 40;
-  warm.resting = true;
-  assert.deepEqual(route([lead, third, warm]), [0, 1, 2]);
-  warm.resting = false;
-  warm.used = 100;
-  assert.deepEqual(route([lead, third, warm]), [0, 1, 2]);
-});
-
-test("keeps a warm cache when both weeks are unknown and prefers a usable weekly reading", t => {
-  t.mock.method(Date, "now", () => at);
-  const lead = { used: 10, tokens: 50 };
-  const warm = { used: 20, tokens: 200, cacheWarm: true };
-  assert.deepEqual(route([lead, warm]), [1, 0]);
-  lead.quotaWindows = seat(at, 38, at + 36 * hour, 10).quotaWindows;
-  assert.deepEqual(route([lead, warm]), [0, 1]);
-  lead.quotaWindows[1].readAt -= 31 * 60_000;
-  assert.deepEqual(route([lead, warm]), [1, 0]);
+  const one = seat(at, 38, reset, 15);
+  const two = seat(at, 38, reset, 55);
+  const lower = seat(at, 40, reset, 5);
+  const resting = seat(at, 36, reset, 5, { resting: true });
+  assert.deepEqual(rank([lower, one, resting, two]), { order: [1, 3, 0, 2], priority: [2, 1, 0, 1] });
+  assert.deepEqual(rank([{ tokens: 60 }, { tokens: 90 }, { tokens: 60 }]), { order: [0, 2, 1], priority: [1, 2, 1] });
+  assert.deepEqual(rank([one, { tokens: 0 }]), { order: [0, 1], priority: [1, 2] });
 });
 
 test("a fresh week leads stale or missing readings, and two unknown weeks use recent work", t => {

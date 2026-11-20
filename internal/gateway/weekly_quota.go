@@ -3,6 +3,8 @@ package gateway
 import (
 	"context"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/provider"
@@ -14,33 +16,6 @@ import (
 // the background for the next turn instead of holding every request up.
 const weeklyQuotaWait = 6 * time.Second
 
-// weeklyCacheHolds compares the selected seat to the last answerer after
-// native routing has applied caps, access, fallbacks and protocol fit.
-func weeklyCacheHolds(scope string, from provider.Protocol, cs []candidate, order []Weighed, at int, last stick) bool {
-	if at <= 0 {
-		return false
-	}
-	next, previous := order[0], order[at]
-	c := cs[at]
-	if next.Routing != routes.WeeklyBalance || previous.Routing != routes.WeeklyBalance ||
-		next.WeeklyQuotaFresh == nil || previous.WeeklyQuotaFresh == nil ||
-		next.Fallback != previous.Fallback || previous.Sunk != nil ||
-		keyFit(cs[0].p, cs[0].model, from) != keyFit(c.p, c.model, from) ||
-		c.who() != last.who || c.model != last.model || c.effort != last.effort ||
-		!cacheHolds(last, c.p) {
-		return false
-	}
-	strategy, ok := routes.Find(routes.WeeklyBalance)
-	if !ok || strategy.Order == nil {
-		return false
-	}
-	seats := []routes.Seat{
-		{Key: next.ID, Used: next.Used, Resting: next.Rest != nil, QuotaWindows: next.QuotaWindows},
-		{Key: previous.ID, Used: previous.Used, Resting: previous.Rest != nil, QuotaWindows: previous.QuotaWindows, CacheWarm: true},
-	}
-	return routes.Apply(strategy, scope, seats)[0] == 1
-}
-
 func prepareWeeklyQuota(ctx context.Context, g provider.Group, members []provider.Member, scope string, header http.Header, from provider.Protocol, body, plain []byte) {
 	if g.Routing != routes.WeeklyBalance || len(members) < 2 || ctx.Err() != nil {
 		return
@@ -49,24 +24,17 @@ func prepareWeeklyQuota(ctx context.Context, g provider.Group, members []provide
 	if !ok || strategy.QuotaMaxAge <= 0 {
 		return
 	}
-	if g.Affinity == provider.AffinityTurn {
-		if _, within := turnOf(from, plain); within {
-			key := stickKey(scope, header, body)
-			sticks.Lock()
-			last, had := stickOf(key)
-			sticks.Unlock()
-			if had && time.Since(last.at) < settings.Shared().TurnAffinityIdle() {
-				return
-			}
-		}
-	}
 	var reads []<-chan struct{}
 	for _, m := range members {
 		if done := provider.PrepareRemoteWeek(m.Provider, m.Model, strategy.QuotaMaxAge); done != nil {
 			reads = append(reads, done)
 		}
 	}
-	if len(reads) == 0 {
+	// Refresh in the background when native affinity could keep the route.
+	// A cap or rule may still make it move; that request uses the snapshots
+	// already available without holding an in-progress conversation up.
+	if len(reads) == 0 || strings.TrimSpace(header.Get(AccountHeader)) != "" ||
+		weeklyQuotaMayKeep(g.Affinity, members, scope, header, from, body, plain) {
 		return
 	}
 	wait, cancel := context.WithTimeout(ctx, weeklyQuotaWait)
@@ -77,5 +45,31 @@ func prepareWeeklyQuota(ctx context.Context, g provider.Group, members []provide
 		case <-wait.Done():
 			return
 		}
+	}
+}
+
+// weeklyQuotaMayKeep only controls whether quota I/O can delay this request.
+// The native affinity path still makes the routing decision.
+func weeklyQuotaMayKeep(mode string, members []provider.Member, scope string, header http.Header, from provider.Protocol, body, plain []byte) bool {
+	if mode == provider.AffinityOff {
+		return false
+	}
+	key := stickKey(scope, header, body)
+	sticks.Lock()
+	last, had := stickOf(key)
+	sticks.Unlock()
+	idle := time.Since(last.at)
+	if !had || idle > stickKeep {
+		return false
+	}
+	switch mode {
+	case provider.AffinitySession, provider.AffinityStrict:
+		return true
+	case provider.AffinityTurn:
+		_, within := turnOf(from, plain)
+		return within && idle < settings.Shared().TurnAffinityIdle()
+	default:
+		_, within := turnOf(from, plain)
+		return within || slices.ContainsFunc(members, func(m provider.Member) bool { return cacheHolds(last, m.Provider) })
 	}
 }

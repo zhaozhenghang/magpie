@@ -72,7 +72,7 @@ func burstSpread(routing string, g *provider.Group, sameMember, reorder bool, cs
 // remote magpie), and alike by what its routing goes by — any of a round
 // In turn; By pace, both on a pace alike within a tenth with no wallet
 // told apart and neither near its cap; Least used, used within a point.
-// Other routings pick for their own reasons and keep their order. In a
+// A plugin can mark seats with the same priority in one pool as alike. In a
 // group, one of a provider routed its own way is alike only to its own
 // provider's, by its provider's routing; a group in the group keeps its
 // own order.
@@ -110,7 +110,8 @@ func burstAlike(routing string, g *provider.Group, sameMember bool, cs []candida
 	case provider.LeastUsed:
 		return a.Known == b.Known && burstTier(a) == burstTier(b) && math.Abs(a.Used-b.Used) < 1 && sameBalance(a, b)
 	}
-	return false
+	return a.priority > 0 && a.priority == b.priority && a.rankPool == b.rankPool &&
+		burstTier(a) == burstTier(b) && sameBalance(a, b)
 }
 
 // burstTier is routes.seatTier of a weighed seat: 0 with room, 1 near
