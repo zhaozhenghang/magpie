@@ -12,7 +12,7 @@ on:
 env:
   # The first release should not downgrade an install already at this version.
   UPSTREAM_MINIMUM: '0.1.4533'
-  FORK_REVISION: '5'
+  FORK_REVISION: '6'
 
 jobs:
   select:

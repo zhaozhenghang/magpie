@@ -3236,10 +3236,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	spread := spreadsSessions(mode, p.Routing)
 	leadScope := scope // where the lead of a subagent is kept
 	if isGroup {
-		// a routing group: every member's keys or accounts weighed together
-		cands, pl = s.planGroup(g, ms, from)
-		group = groupRef(g, ms)
-		group.Paused = paused
 		scope, mode, rotate = provider.GroupPrefix+g.ID, g.Affinity, routingOf(g.Routing) == provider.Rotate
 		spread = spreadsSessions(mode, g.Routing)
 		leadScope = scope
@@ -3248,6 +3244,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// conversation with it: each keeps where it is on its own
 			scope += "|" + words
 		}
+		if !desktopCheck {
+			prepareWeeklyQuota(r.Context(), g, ms, scope, r.Header, from, body, plain)
+		}
+		// a routing group: every member's keys or accounts weighed together
+		cands, pl = s.planGroup(g, ms, from)
+		group = groupRef(g, ms)
+		group.Paused = paused
 	} else {
 		// a routing group among the fallbacks is routed as a request to it
 		// would be, its pause rules too (pausedOut's)

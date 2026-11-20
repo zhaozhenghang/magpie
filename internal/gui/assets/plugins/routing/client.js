@@ -882,6 +882,7 @@ function routingPage(part) {
   const usedRenews = (w) => known0(w.usedRenews) ? at(w.usedRenews) : (w.renews || []).length === 1 ? renews(w)[0] : 0;
   const isWeeklyBalance = (w) => w.routing === "weekly-balance/weekly-balance";
   function weeklyQuota(w) {
+    if (w.weeklyQuotaFresh === false) return null;
     const weeks = (w.quotaWindows || []).filter((q) => q.spanMs === 7 * 24 * 60 * 60 * 1000 && !q.modelScoped);
     if (weeks.length === 1) return { ...weeks[0], usedWindow: "7 days" };
     if (!w.quotaWindows && w.usedWindow === "7 days") return { used: w.used, usedWindow: w.usedWindow, resetsAt: usedRenews(w) };

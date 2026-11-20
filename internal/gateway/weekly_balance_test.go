@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,21 +60,36 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	read := now.Add(-time.Minute)
 	shortReset := now.Add(time.Hour)
 	var limitB atomic.Bool
+	var staleB atomic.Bool
+	var refreshB atomic.Int32
 	addRemote := func(id string, used, short float64, until time.Duration, limited *atomic.Bool) {
 		t.Helper()
 		reset := now.Add(until)
-		cards := provider.ToldRouting([]provider.SubscriptionQuota{{
-			Provider: "claude", Kind: "subscription", User: id + "@example.invalid",
-			ReadAt: &read, Windows: []provider.QuotaWindow{
-				{Name: "5 hours", Span: 5 * time.Hour, Used: short, ResetsAt: &shortReset},
-				{Name: "7 days", Span: 7 * 24 * time.Hour, Used: used, ResetsAt: &reset},
-			},
-		}})
+		cards := func() []provider.SubscriptionQuota {
+			at := read
+			if id == "remote-b" && staleB.Load() {
+				at = now.Add(-40 * time.Minute)
+			}
+			return provider.ToldRouting([]provider.SubscriptionQuota{{
+				Provider: "claude", Kind: "subscription", User: id + "@example.invalid",
+				ReadAt: &at, Windows: []provider.QuotaWindow{
+					{Name: "5 hours", Span: 5 * time.Hour, Used: short, ResetsAt: &shortReset},
+					{Name: "7 days", Span: 7 * 24 * time.Hour, Used: used, ResetsAt: &reset},
+				},
+			}})
+		}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			switch r.Method + " " + r.URL.Path {
 			case "GET " + provider.RemoteCardsPath:
-				json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": cards})
+				json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": cards()})
+			case "POST " + provider.RemoteRefreshPath:
+				if id != "remote-b" || r.URL.Query().Get("provider") != "claude" {
+					t.Errorf("unexpected quota refresh on %s", id)
+				}
+				refreshB.Add(1)
+				staleB.Store(false)
+				json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": cards()})
 			case "GET /v1/magpie/limit":
 				http.NotFound(w, r)
 			case "POST /v1/messages":
@@ -176,10 +192,63 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			}
 		})
 	}
+	staleB.Store(true)
+	provider.ForgetRemoteCardsForTest()
+	provider.RemoteCards(context.Background())
+	ask(t, "refresh stale seat", first, "remote-b")
+	if n := refreshB.Load(); n != 1 {
+		t.Fatalf("got %d active quota refreshes, want one", n)
+	}
 	limitB.Store(true)
 	ask(t, "second", first, "remote-a")
 	if state := middleware.States()[src]; state.Orders < 2 || state.Failures != 0 {
 		t.Fatalf("strategy state = %+v", state)
+	}
+}
+
+func TestWeeklyQuotaWaitHonorsRequestDeadline(t *testing.T) {
+	fresh(t)
+	provider.ForgetRemoteCardsForTest()
+	t.Cleanup(provider.ForgetRemoteCardsForTest)
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == provider.RemoteRefreshPath {
+			close(entered)
+			<-release
+		}
+		io.WriteString(w, `{"data":[]}`)
+	}))
+	t.Cleanup(peer.Close)
+	t.Cleanup(unblock)
+	const age = 30 * time.Minute
+	const model = "claude/opus"
+	remote := provider.Provider{ID: "slow-peer", Preset: provider.RemoteMagpiePreset, Key: peer.URL, Anthropic: peer.URL}
+	pending := provider.PrepareRemoteWeek(remote, model, age)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the remote refresh did not start")
+	}
+	t.Cleanup(routes.Register(routes.WeeklyBalance, routes.Strategy{ByQuota: true, QuotaMaxAge: age}))
+	group := provider.Group{ID: "weekly", Routing: routes.WeeklyBalance}
+	members := []provider.Member{{Provider: remote, Model: model}, {Model: "local"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	prepareWeeklyQuota(ctx, group, members, "group/weekly", nil, provider.Chat, nil, nil)
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatalf("the caller didn't wait for the pending read: %v", ctx.Err())
+	}
+	select {
+	case <-pending:
+		t.Fatal("the caller canceled the shared refresh")
+	default:
+	}
+	unblock()
+	select {
+	case <-pending:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pending read did not finish")
 	}
 }
 

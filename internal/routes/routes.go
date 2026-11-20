@@ -123,6 +123,8 @@ type Seat struct {
 	Window int
 }
 
+const WeeklyBalance = "weekly-balance/weekly-balance"
+
 // Strategy orders a pool.
 type Strategy struct {
 	// Order is the order to try seats in: a permutation of their indexes.
@@ -138,6 +140,8 @@ type Strategy struct {
 	ByUse bool
 	// ByQuota asks for the seat's individual allowance readings.
 	ByQuota bool
+	// QuotaMaxAge allows the gateway to prepare weekly quota before routing.
+	QuotaMaxAge time.Duration
 	// ByFree: it weighs by Free, so the gateway works out which seat's
 	// model costs nothing there, and the routing trace then shows it.
 	// Only when set: working it out reads each provider's model list.

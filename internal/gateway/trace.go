@@ -336,7 +336,8 @@ type Weighed struct {
 	Learns   bool    `json:"learns,omitempty"` // not known, but its answer will tell
 	Used     float64 `json:"used"`             // share of the allowance counting the model, used
 	// QuotaWindows are the snapshots given to a routing strategy that asks for them.
-	QuotaWindows []provider.RoutingQuotaWindow `json:"quotaWindows,omitempty"`
+	QuotaWindows     []provider.RoutingQuotaWindow `json:"quotaWindows,omitempty"`
+	WeeklyQuotaFresh *bool                         `json:"weeklyQuotaFresh,omitempty"`
 	// WeekLow: Used is at 90% or more for its week alone, so Smart and Use
 	// before expiry keep it with those that have room rather than for
 	// last (routes.Seat.WeekLow); false under another routing
@@ -680,6 +681,10 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 		}
 	} else if wg.lefts != nil {
 		w.Learns = learns(c, wg.lefts)
+	}
+	if wg.weeklyMaxAge > 0 {
+		fresh := provider.WeeklyQuotaFresh(w.QuotaWindows, time.Now(), wg.weeklyMaxAge)
+		w.WeeklyQuotaFresh = &fresh
 	}
 	if wg.tokens != nil {
 		w.Tokens = wg.tokens[c.rest]

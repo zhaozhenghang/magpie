@@ -35,14 +35,11 @@ function weeklyBalance(_pool, seats, options) {
     tokens: seat.tokens || 0,
   }));
 
-  const available = order.filter(item => !item.unavailable);
-  const compareWeek = available.length > 1 && available.every(item => item.weekly !== null);
   order.sort((a, b) => {
     if (a.unavailable !== b.unavailable) return a.unavailable ? 1 : -1;
     if (a.unavailable) return a.index - b.index;
-    // Let an idle account take a turn and pick up a new sample when one
-    // of the comparable week readings has aged out.
-    if (!compareWeek) return a.tokens - b.tokens || a.index - b.index;
+    if (a.weekly === null && b.weekly === null) return a.tokens - b.tokens || a.index - b.index;
+    if (a.weekly === null || b.weekly === null) return a.weekly === null ? 1 : -1;
     return a.weekly - b.weekly || a.index - b.index;
   });
   return order.map(item => item.index);

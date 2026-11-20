@@ -2560,7 +2560,8 @@ func route(p provider.Provider, cs []candidate, model string, from provider.Prot
 // its allowance each account has used and when that renews, and the tokens
 // each served lately. The routing trace shows the same.
 type weighing struct {
-	lefts map[allowanceKey]left // the allowance of each account and model
+	weeklyMaxAge time.Duration
+	lefts        map[allowanceKey]left // the allowance of each account and model
 
 	tokens map[string]float64 // least used: tokens each served lately
 
@@ -2734,7 +2735,8 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 	// told: the Routing page shows it (#1016)
 	known := map[string]map[string]provider.Allowance{}
 	st, hasStrategy := routes.Find(p.Routing)
-	withWindows := len(cs) > 1 && hasStrategy && st.ByQuota
+	wg.weeklyMaxAge = st.QuotaMaxAge
+	withWindows := hasStrategy && st.ByQuota && (len(cs) > 1 || wg.weeklyMaxAge > 0)
 	now := time.Now()
 	wg.lefts = map[allowanceKey]left{}
 	for _, c := range cs {

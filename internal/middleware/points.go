@@ -217,7 +217,7 @@ var errBusy = errors.New("its runtime was busy past the time a strategy has")
 
 // strategy is s of m as the router's strategy point takes it.
 func (m *mw) strategy(s strat) routes.Strategy {
-	return routes.Strategy{ByQuota: true, Order: func(pool string, seats []routes.Seat) []int {
+	strategy := routes.Strategy{ByQuota: true, Order: func(pool string, seats []routes.Seat) []int {
 		order, err := m.order(s.h, pool, seats)
 		if err != nil {
 			m.fail("strategies."+s.name, err)
@@ -228,6 +228,18 @@ func (m *mw) strategy(s strat) routes.Strategy {
 		}
 		return order
 	}}
+	if m.routing(s.name) == routes.WeeklyBalance {
+		var options struct {
+			MaxAge any `json:"maxSampleAgeMinutes"`
+		}
+		_ = json.Unmarshal(m.options, &options)
+		minutes, ok := options.MaxAge.(float64)
+		if !ok || minutes < 1 || minutes > 120 {
+			minutes = 30
+		}
+		strategy.QuotaMaxAge = time.Duration(minutes * float64(time.Minute))
+	}
+	return strategy
 }
 
 // order asks h for seats' order, checked to be a permutation of them.

@@ -42,26 +42,27 @@ test("a small weekly lead beats a lower 5h reading without overriding a hard cap
   assert.deepEqual(route([ntt, dmit]), [0, 1]);
 });
 
-test("a missing or stale week falls back to recent work, then list order", t => {
+test("a fresh week leads stale or missing readings, and two unknown weeks use recent work", t => {
   t.mock.method(Date, "now", () => at);
   const valid = seat(at, 12, at + 48 * hour, 10);
   const stale = seat(at, 65, at + 84 * hour, 10);
   stale.quotaWindows[1].readAt -= 31 * 60_000;
-  assert.deepEqual(route([stale, valid]), [0, 1]);
+  assert.deepEqual(route([stale, valid]), [1, 0]);
   assert.deepEqual(route([stale, valid], { maxSampleAgeMinutes: 40 }), [1, 0]);
-  assert.deepEqual(route([seat(at, 80, at, 20), valid]), [0, 1]);
-  assert.deepEqual(route([seat(at, 0, at + week + hour, 20), valid]), [0, 1]);
+  assert.deepEqual(route([seat(at, 80, at, 20), valid]), [1, 0]);
+  assert.deepEqual(route([seat(at, 0, at + week + hour, 20), valid]), [1, 0]);
 
   const scoped = seat(at, 70, at + 84 * hour, 10);
   scoped.quotaWindows[1].modelScoped = true;
-  assert.deepEqual(route([scoped, valid]), [0, 1]);
-  assert.deepEqual(route([{ used: 81 }, valid]), [0, 1]);
+  assert.deepEqual(route([scoped, valid]), [1, 0]);
+  assert.deepEqual(route([{ used: 81 }, valid]), [1, 0]);
   const ambiguous = seat(at, 70, at + 84 * hour, 10);
   ambiguous.quotaWindows.push(ambiguous.quotaWindows[1]);
-  assert.deepEqual(route([ambiguous, valid]), [0, 1]);
+  assert.deepEqual(route([ambiguous, valid]), [1, 0]);
   assert.deepEqual(route([{ used: 100 }, valid]), [1, 0]);
   valid.tokens = 20_000;
-  assert.deepEqual(route([valid, stale]), [1, 0]);
+  assert.deepEqual(route([valid, stale]), [0, 1]);
+  assert.deepEqual(route([{ used: 25, tokens: 1000 }, stale]), [1, 0]);
 });
 
 test("the first new sample after a reset starts the new cycle across year boundaries", t => {
@@ -72,9 +73,9 @@ test("the first new sample after a reset starts the new cycle across year bounda
   const b = seat(now, 18, reset + 80 * hour, 18);
   assert.deepEqual(route([a, b]), [1, 0]);
   now = reset + hour;
-  assert.deepEqual(route([a, b]), [0, 1]);
-  a = seat(now, 1, reset + week, 20);
   b.quotaWindows.forEach(window => { window.readAt = now; });
+  assert.deepEqual(route([a, b]), [1, 0]);
+  a = seat(now, 1, reset + week, 20);
   assert.deepEqual(route([a, b]), [1, 0]);
 });
 

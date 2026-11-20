@@ -66,7 +66,7 @@ func withRouting(cs []SubscriptionQuota) []SubscriptionQuota {
 // for in the background, by remoteCardsID: one ask at a time each.
 var remoteRouteReads struct {
 	sync.Mutex
-	m map[string]bool
+	m map[string]chan struct{}
 }
 
 // RemoteAllowance is what the Remote magpie p has left for model, its id
@@ -136,17 +136,18 @@ func RemoteSeat(p Provider, model string, ask bool) (a Allowance, inner string, 
 
 // askRemoteForRouting reads p's cards in the background, unless that is
 // under way.
-func askRemoteForRouting(p Provider, id string) {
+func askRemoteForRouting(p Provider, id string) <-chan struct{} {
 	rr := &remoteRouteReads
 	rr.Lock()
-	if rr.m[id] {
+	if read := rr.m[id]; read != nil {
 		rr.Unlock()
-		return
+		return read
 	}
 	if rr.m == nil {
-		rr.m = map[string]bool{}
+		rr.m = map[string]chan struct{}{}
 	}
-	rr.m[id] = true
+	read := make(chan struct{})
+	rr.m[id] = read
 	rr.Unlock()
 	c := &remoteCardCache
 	c.Lock()
@@ -156,10 +157,12 @@ func askRemoteForRouting(p Provider, id string) {
 		defer func() {
 			rr.Lock()
 			delete(rr.m, id)
+			close(read)
 			rr.Unlock()
 		}()
 		asked := time.Now()
 		cards, err := askRemote(context.Background(), p, http.MethodGet, RemoteCardsPath, remoteWait)
 		keepRemoteCardsOf(id, gen, asked, cards, err)
 	})
+	return read
 }
