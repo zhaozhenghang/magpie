@@ -3463,6 +3463,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	inOrder := routingOf(p.Routing) == provider.Ordered
 	if isGroup {
 		inOrder = routingOf(g.Routing) == provider.Ordered
+		if g.Routing == "weekly-balance/weekly-balance" {
+			pl.turnAffinityIdle = time.Hour
+		}
 	}
 	cands, pl, aff, stuck := affine(scope, mode, rotate, spread, inOrder, hit != nil && hit.Ended > 0, r.Header, from, body, plain, cands, pl)
 	// a strict conversation left with its own account of several: its

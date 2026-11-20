@@ -118,16 +118,50 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New()
-	ask := func(session, want string) {
+	ask := func(t *testing.T, session, request, want string) {
 		t.Helper()
-		code, body := postAs(t, s, session, `{"model":"group/weekly","messages":[{"role":"user","content":"test"}]}`)
+		code, body := postAs(t, s, session, request)
 		if code != http.StatusOK || !strings.Contains(body, "served by "+want) {
 			t.Fatalf("want %s, got %d %s, strategy state %+v", want, code, body, middleware.States()[src])
 		}
 	}
-	ask("first", "remote-b")
+	const first = `{"model":"group/weekly","messages":[{"role":"user","content":"test"}]}`
+	const tool = `{"model":"group/weekly","messages":[{"role":"user","content":"test"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"ls","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"a.go"}]}`
+	ask(t, "first", first, "remote-b")
+	last, err := provider.Find("remote-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, want, why string
+		idle            time.Duration
+		kept            bool
+	}{
+		{"within an hour", "remote-a", "turn", 59 * time.Minute, true},
+		{"at one hour", "remote-b", "cold", time.Hour, false},
+		{"overnight", "remote-b", "cold", 15 * time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := make(http.Header)
+			h.Set("x-session-id", tc.name)
+			key := stickKey("group/weekly", h, []byte(tool))
+			answered(key, candidate{p: *last, model: model, rest: last.ID}, 1, Usage{CacheRead: 400_000})
+			sticks.Lock()
+			st := sticks.m[key]
+			st.at = st.at.Add(-tc.idle)
+			sticks.m[key] = st
+			sticks.Unlock()
+			answered(stickKey("group/other", h, []byte(tool)),
+				candidate{p: *last, model: model, rest: last.ID}, 1, Usage{CacheRead: 500_000})
+
+			ask(t, tc.name, tool, tc.want)
+			if aff := lastRoute(s).Affinity; aff == nil || !aff.Within || aff.Kept != tc.kept || aff.Why != tc.why {
+				t.Fatalf("affinity = %+v, want within=true kept=%v why=%s", aff, tc.kept, tc.why)
+			}
+		})
+	}
 	limitB.Store(true)
-	ask("second", "remote-a")
+	ask(t, "second", first, "remote-a")
 	if state := middleware.States()[src]; state.Orders < 2 || state.Failures != 0 {
 		t.Fatalf("strategy state = %+v", state)
 	}
