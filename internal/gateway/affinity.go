@@ -590,7 +590,8 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 	if had {
 		a.Last, a.LastTurn, a.At, a.CacheRead, a.CacheWrite = st.rest, st.turn, st.at, st.cacheRead, st.cacheWrite
 	}
-	turnExpired := had && a.Within && mode == provider.AffinityTurn && idle >= settings.Shared().TurnAffinityIdle()
+	pastTurnIdle := had && mode == provider.AffinityTurn && idle >= settings.Shared().TurnAffinityIdle()
+	turnExpired := a.Within && pastTurnIdle
 	// the account and the model that answered: a group with Opus and
 	// Sonnet both on one Claude account, a rule sending the turn to Opus,
 	// had the turn's next request kept to the account and so to Sonnet,
@@ -706,6 +707,8 @@ func affine(scope, mode string, rotate, spread, inOrder, hoursOver bool, in http
 		a.Why = "turn-timeout"
 	case a.Within:
 		a.Why = "turn"
+	case mode == provider.AffinityTurn && !pastTurnIdle && weeklyCacheHolds(pl.routing, scope, from, cs, pl.order, at, st):
+		a.Why = "cache"
 	case mode == provider.AffinityTurn, rotate:
 		a.Why = "new-turn"
 	case st.cacheRead+st.cacheWrite < cacheWorth:

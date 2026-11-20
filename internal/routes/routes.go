@@ -73,6 +73,8 @@ type Seat struct {
 	Tokens float64
 	// QuotaWindows are dated allowance readings that count the seat's model.
 	QuotaWindows []provider.RoutingQuotaWindow
+	// CacheWarm marks the previous answerer in a cache-aware comparison.
+	CacheWarm bool
 	// Free: the model this seat would be asked for costs nothing on it —
 	// its vendor serves that model at no cost to the subscription's
 	// allowance or credits (catalog.Model's Free). FreeFirst goes by it.

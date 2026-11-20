@@ -1,5 +1,6 @@
 const hour = 60 * 60 * 1000;
 const week = 7 * 24 * hour;
+const cacheTolerancePoints = 2;
 
 function option(value, fallback, minimum, maximum) {
   return Number.isFinite(value) && value >= minimum && value <= maximum ? value : fallback;
@@ -33,6 +34,7 @@ function weeklyBalance(_pool, seats, options) {
     unavailable: seat.resting || seat.used >= 100,
     weekly: weeklyProgress(seat, now, maxAge, target),
     tokens: seat.tokens || 0,
+    cacheWarm: seat.cacheWarm,
   }));
 
   order.sort((a, b) => {
@@ -42,6 +44,12 @@ function weeklyBalance(_pool, seats, options) {
     if (a.weekly === null || b.weekly === null) return a.weekly === null ? 1 : -1;
     return a.weekly - b.weekly || a.index - b.index;
   });
+  const first = order[0];
+  const warm = order.findIndex(item => item.cacheWarm && !item.unavailable &&
+    (item.weekly === null || first.weekly === null
+      ? item.weekly === first.weekly
+      : item.weekly - first.weekly <= cacheTolerancePoints));
+  if (warm > 0) order.unshift(...order.splice(warm, 1));
   return order.map(item => item.index);
 }
 

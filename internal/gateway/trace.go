@@ -608,6 +608,8 @@ type AutoReset struct {
 
 type planned struct {
 	order, left []Weighed
+	// routing is the strategy of the requested pool as affinity sees it.
+	routing string
 	// held: the accounts left out (in left) as they won't spend their
 	// credits, for one that spends its resets by itself to spend one
 	held []candidate

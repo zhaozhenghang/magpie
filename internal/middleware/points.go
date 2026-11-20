@@ -211,6 +211,7 @@ type seatJSON struct {
 	Resting      bool                          `json:"resting"`
 	Tokens       float64                       `json:"tokens"`
 	QuotaWindows []provider.RoutingQuotaWindow `json:"quotaWindows,omitempty"`
+	CacheWarm    bool                          `json:"cacheWarm,omitempty"`
 }
 
 var errBusy = errors.New("its runtime was busy past the time a strategy has")
@@ -253,7 +254,7 @@ func (m *mw) order(h moejs.Hook, pool string, seats []routes.Seat) ([]int, error
 		}
 		list[i] = seatJSON{Key: s.Key, Account: s.Account, Known: s.Known, Learns: s.Learns,
 			Used: s.Used, Soon: soon, Pace: s.Pace, Weight: s.Weight, Resting: s.Resting,
-			Tokens: s.Tokens, QuotaWindows: s.QuotaWindows}
+			Tokens: s.Tokens, QuotaWindows: s.QuotaWindows, CacheWarm: s.CacheWarm}
 	}
 	b, err := json.Marshal(list)
 	if err != nil {

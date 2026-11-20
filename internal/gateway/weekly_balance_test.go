@@ -62,10 +62,12 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	type remoteState struct {
 		limited, stale atomic.Bool
 		refreshes      atomic.Int32
+		weekly         atomic.Int32
 	}
 	addRemote := func(id string, used, short float64, until time.Duration) *remoteState {
 		t.Helper()
 		state := &remoteState{}
+		state.weekly.Store(int32(used))
 		reset := now.Add(until)
 		cards := func() []provider.SubscriptionQuota {
 			at := read
@@ -76,7 +78,7 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 				Provider: "claude", Kind: "subscription", User: id + "@example.invalid",
 				ReadAt: &at, Windows: []provider.QuotaWindow{
 					{Name: "5 hours", Span: 5 * time.Hour, Used: short, ResetsAt: &shortReset},
-					{Name: "7 days", Span: 7 * 24 * time.Hour, Used: used, ResetsAt: &reset},
+					{Name: "7 days", Span: 7 * 24 * time.Hour, Used: float64(state.weekly.Load()), ResetsAt: &reset},
 				},
 			}})
 		}
@@ -196,6 +198,54 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			}
 		})
 	}
+	t.Run("weekly cache preference across turns", func(t *testing.T) {
+		a.weekly.Store(41) // its week is 0.9 points ahead of the target relative to remote-b
+		provider.ForgetRemoteCardsForTest()
+		provider.RemoteCards(context.Background())
+		for _, tc := range []struct {
+			name, want, why string
+			idle            time.Duration
+			usage           Usage
+			minutes         int
+		}{
+			{"warm cache and close weekly progress", "remote-a", "cache", time.Minute, Usage{CacheRead: 400_000}, 60},
+			{"small cache", "remote-b", "new-turn", time.Minute, Usage{CacheRead: 20}, 60},
+			{"cache expired", "remote-b", "new-turn", 6 * time.Minute, Usage{CacheRead: 400_000}, 60},
+			{"global idle limit expires first", "remote-b", "new-turn", 2 * time.Minute, Usage{CacheRead: 400_000}, 1},
+		} {
+			prefs := settings.Load()
+			prefs.TurnAffinityMinutes = tc.minutes
+			if err := settings.Save(prefs); err != nil {
+				t.Fatal(err)
+			}
+			h := make(http.Header)
+			h.Set("x-session-id", tc.name)
+			key := stickKey("group/weekly", h, []byte(first))
+			answered(key, candidate{p: *last, model: model, rest: last.ID}, 1, tc.usage)
+			sticks.Lock()
+			st := sticks.m[key]
+			st.at = st.at.Add(-tc.idle)
+			sticks.m[key] = st
+			sticks.Unlock()
+			ask(t, tc.name, first, tc.want)
+			if aff := lastRoute(s).Affinity; aff == nil || aff.Within || aff.Why != tc.why || aff.Kept != (tc.why == "cache") {
+				t.Fatalf("%s: affinity = %+v, want %s", tc.name, aff, tc.why)
+			}
+		}
+		ask(t, "new session with close weekly progress", first, "remote-b")
+
+		a.weekly.Store(50)
+		provider.ForgetRemoteCardsForTest()
+		provider.RemoteCards(context.Background())
+		h := make(http.Header)
+		h.Set("x-session-id", "large weekly gap")
+		key := stickKey("group/weekly", h, []byte(first))
+		answered(key, candidate{p: *last, model: model, rest: last.ID}, 1, Usage{CacheRead: 400_000})
+		ask(t, "large weekly gap", first, "remote-b")
+		if aff := lastRoute(s).Affinity; aff == nil || aff.Why != "new-turn" || aff.Kept {
+			t.Fatalf("large weekly gap: affinity = %+v", aff)
+		}
+	})
 	b.stale.Store(true)
 	provider.ForgetRemoteCardsForTest()
 	provider.RemoteCards(context.Background())

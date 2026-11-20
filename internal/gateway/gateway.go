@@ -3232,11 +3232,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// a conversation's affinity is to one model: another's cache is its
 	// own, and an agent's side requests (a title, a summary) to a smaller
 	// model leave the conversation where it is
-	scope, mode, rotate := p.ID+"/"+model, p.Affinity, routingOf(p.Routing) == provider.Rotate
+	scope, mode, routing := p.ID+"/"+model, p.Affinity, p.Routing
+	rotate := routingOf(routing) == provider.Rotate
 	spread := spreadsSessions(mode, p.Routing)
 	leadScope := scope // where the lead of a subagent is kept
 	if isGroup {
-		scope, mode, rotate = provider.GroupPrefix+g.ID, g.Affinity, routingOf(g.Routing) == provider.Rotate
+		scope, mode, routing = provider.GroupPrefix+g.ID, g.Affinity, g.Routing
+		rotate = routingOf(routing) == provider.Rotate
 		spread = spreadsSessions(mode, g.Routing)
 		leadScope = scope
 		if words != "" {
@@ -3463,10 +3465,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	// (#63): its reasoning, sealed by the account that wrote it, is refused
 	// by another.
 	before := len(cands)
-	inOrder := routingOf(p.Routing) == provider.Ordered
-	if isGroup {
-		inOrder = routingOf(g.Routing) == provider.Ordered
-	}
+	inOrder := routingOf(routing) == provider.Ordered
+	pl.routing = routing
 	cands, pl, aff, stuck := affine(scope, mode, rotate, spread, inOrder, hit != nil && hit.Ended > 0, r.Header, from, body, plain, cands, pl)
 	// a strict conversation left with its own account of several: its
 	// failure rests the account as it would with the others still there,
