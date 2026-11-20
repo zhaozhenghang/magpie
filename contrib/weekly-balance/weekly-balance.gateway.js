@@ -20,18 +20,7 @@ function weeklyProgress(seat, now, maxAge, target) {
   if (!recent(window, now, maxAge) || !Number.isFinite(start) ||
       window.resetsAt <= now || start > now || window.readAt < start) return null;
   const elapsed = (now - start) / window.spanMs;
-  // A one-point band keeps small sampling differences out of the sort.
-  return Math.round(window.used - target * elapsed);
-}
-
-function shortUse(seat, now, maxAge) {
-  let used = null;
-  for (const window of seat.quotaWindows || []) {
-    if (window.spanMs === 5 * hour && window.resetsAt > now && recent(window, now, maxAge)) {
-      used = used === null ? window.used : Math.max(used, window.used);
-    }
-  }
-  return used;
+  return window.used - target * elapsed;
 }
 
 function weeklyBalance(_pool, seats, options) {
@@ -43,21 +32,18 @@ function weeklyBalance(_pool, seats, options) {
     // Core and the serving gateway remain responsible for all hard caps.
     unavailable: seat.resting || seat.used >= 100,
     weekly: weeklyProgress(seat, now, maxAge, target),
-    short: shortUse(seat, now, maxAge),
     tokens: seat.tokens || 0,
   }));
 
   const available = order.filter(item => !item.unavailable);
   const compareWeek = available.length > 1 && available.every(item => item.weekly !== null);
-  const compareShort = compareWeek && available.every(item => item.short !== null);
   order.sort((a, b) => {
     if (a.unavailable !== b.unavailable) return a.unavailable ? 1 : -1;
     if (a.unavailable) return a.index - b.index;
     // Let an idle account take a turn and pick up a new sample when one
     // of the comparable week readings has aged out.
     if (!compareWeek) return a.tokens - b.tokens || a.index - b.index;
-    return a.weekly - b.weekly || (compareShort ? a.short - b.short : 0) ||
-      a.tokens - b.tokens || a.index - b.index;
+    return a.weekly - b.weekly || a.index - b.index;
   });
   return order.map(item => item.index);
 }

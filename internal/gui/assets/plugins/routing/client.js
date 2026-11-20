@@ -880,6 +880,13 @@ function routingPage(part) {
   // Without it (a route from before the gateway said so) only an account
   // of one window says when.
   const usedRenews = (w) => known0(w.usedRenews) ? at(w.usedRenews) : (w.renews || []).length === 1 ? renews(w)[0] : 0;
+  const isWeeklyBalance = (w) => w.routing === "weekly-balance/weekly-balance";
+  function weeklyQuota(w) {
+    const weeks = (w.quotaWindows || []).filter((q) => q.spanMs === 7 * 24 * 60 * 60 * 1000 && !q.modelScoped);
+    if (weeks.length === 1) return { ...weeks[0], usedWindow: "7 days" };
+    if (!w.quotaWindows && w.usedWindow === "7 days") return { used: w.used, usedWindow: w.usedWindow, resetsAt: usedRenews(w) };
+    return null;
+  }
   // renewsBy is renews as Smart ranks them, the gateway's own key (soon,
   // Allowance.Renewal): a credit pack ending before its window resets
   // renews then (#5646), an auto-used Codex reset that starts the windows
@@ -3276,6 +3283,8 @@ function routingPage(part) {
       // rest with it (#1960)
       const r = src().get(row.rid) || pinned || cur, { answered, rests, gave, went } = findings(r);
       const w = row.w, rest = rests.get(w.id) || rests.get(w.id + "\u0000" + (w.model || "")), resting = rest && at(rest.until) > n;
+      const weekly = isWeeklyBalance(w), meter = weekly ? weeklyQuota(w) : w;
+      const weekText = weekly ? (meter ? quota(meter, "{n} used", "{n} left") : t("Weekly quota unavailable")) : "";
       const smart = r.order[0] && id === seat(r.order[0]) && smartFor(r), said = smart ? t("picked for “{intent}”", { intent: smart }) : "";
       // the session it answers or answered, by its title, so which one
       // has the account shows (connor_yang on Discord): the request's
@@ -3310,6 +3319,7 @@ function routingPage(part) {
       // used" and its bar said the seat that always can answer was spent
       // (#3763). The gateway says .free under a routing that weighs by it.
       else if (w.free) s = t("free · costs nothing");
+      else if (weekly) s = weekText;
       else if (w.known) {
         const soon = usedRenews(w);
         s = w.creditsLast && !r.order[0]?.creditsLast ? quota(w, "{n} used · on credits · after the others", "{n} left · on credits · after the others")
@@ -3330,8 +3340,9 @@ function routingPage(part) {
       // doing (dzxx0496 on Discord): answering, kept for last, passed over.
       // A resting row says when it is back instead, a free one has nothing
       // to renew, and a row that says it already isn't told twice.
+      if (weekly && !w.unlisted && !w.free && s !== weekText) s += " · " + weekText;
       if (!resting && !w.unlisted && w.known && !w.free) {
-        const soon = usedRenews(w), renew = soon > n ? t("renews in {d}", { d: dur(soon - n) }) : "";
+        const soon = weekly ? meter?.resetsAt : usedRenews(w), renew = soon > n ? t("renews in {d}", { d: dur(soon - n) }) : "";
         if (renew && !s.includes(renew)) s += " · " + renew;
       }
       // the title in a span of its own, one line cut short however the
@@ -3350,9 +3361,9 @@ function routingPage(part) {
       // crowd the stage. Live only, as the list's are (winsOf).
       const tip = [w.id, ...(day ? [] : [...winsOf(w), cardError(w)].filter(Boolean))].join("\n");
       if (row.li.title !== tip) row.li.title = tip;
-      const bar = w.known && !w.free && w.balance == null;
+      const bar = !!meter && w.known && !w.free && meter.balance == null;
       row.li.classList.toggle("nobar", !bar);
-      row.bi.style.width = bar ? fill(w) : "0";
+      row.bi.style.width = bar ? fill(meter) : "0";
       // on: the row answers or answered the request shown; flying: a
       // request is with it now. Only that moves (the dot's pulse, the
       // wire's flow): an answer that is over stays lit, still, or a

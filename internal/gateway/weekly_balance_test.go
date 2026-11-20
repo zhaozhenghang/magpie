@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -128,6 +129,13 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	const first = `{"model":"group/weekly","messages":[{"role":"user","content":"test"}]}`
 	const tool = `{"model":"group/weekly","messages":[{"role":"user","content":"test"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"ls","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"a.go"}]}`
 	ask(t, "first", first, "remote-b")
+	for _, w := range lastRoute(s).Order {
+		if !slices.ContainsFunc(w.QuotaWindows, func(q provider.RoutingQuotaWindow) bool {
+			return q.SpanMS == (7*24*time.Hour).Milliseconds() && q.ReadAt == read.UnixMilli() && q.ResetsAt > now.UnixMilli()
+		}) {
+			t.Fatalf("%s: missing weekly quota snapshot in routing trace: %+v", w.ID, w.QuotaWindows)
+		}
+	}
 	last, err := provider.Find("remote-a")
 	if err != nil {
 		t.Fatal(err)

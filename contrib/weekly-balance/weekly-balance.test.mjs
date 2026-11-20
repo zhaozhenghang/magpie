@@ -18,17 +18,28 @@ function seat(now, weeklyUsed, weeklyReset, shortUsed, overrides = {}) {
   };
 }
 
-test("ranks by weekly progress with offset resets, using 5h only for close scores", t => {
+test("ranks by weekly progress with offset resets", t => {
   t.mock.method(Date, "now", () => at);
   const a = seat(at, 30, at + 120 * hour, 10);
   const b = seat(at, 40, at + 36 * hour, 65);
   assert.deepEqual(route([a, b]), [1, 0]);
 
   const c = seat(at, 40, at + 36 * hour, 10);
-  assert.deepEqual(route([b, c]), [1, 0]);
+  b.tokens = 10_000;
+  assert.deepEqual(route([b, c]), [0, 1]);
   assert.deepEqual(route([a, b], { weeklyTarget: 10 }), [0, 1]);
   b.resting = true;
   assert.deepEqual(route([b, a]), [1, 0]);
+});
+
+test("a small weekly lead beats a lower 5h reading without overriding a hard cap", t => {
+  const now = Date.parse("2026-11-20T11:27:20+08:00");
+  t.mock.method(Date, "now", () => now);
+  const dmit = seat(now, 8, Date.parse("2026-11-27T02:00:00+08:00"), 63);
+  const ntt = seat(now, 41, Date.parse("2026-11-24T01:00:00+08:00"), 61);
+  assert.deepEqual(route([ntt, dmit]), [1, 0]);
+  dmit.used = dmit.quotaWindows[0].used = 100;
+  assert.deepEqual(route([ntt, dmit]), [0, 1]);
 });
 
 test("a missing or stale week falls back to recent work, then list order", t => {

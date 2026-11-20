@@ -22,7 +22,7 @@ const route = {
   order: accts, tries: [{ id: "acct-1", model: "gpt-6", start: iso(now - 2000), done: true, ms: 800, status: 200 }],
 };
 
-function serve(lang, left) {
+function serve(lang, left, sample = route) {
   const state = { agents: [{ id: "codex", name: "Codex", path: "/test/codex", fields: [] }], profiles: [], settings: { lang, theme: "light", quotaLeft: left } };
   return async (r) => {
     const url = new URL(r.request().url());
@@ -32,7 +32,7 @@ function serve(lang, left) {
     if (url.pathname === "/api/state") return json(state);
     if (url.pathname === "/api/gateway/trace") {
       if (url.searchParams.get("wait")) return new Promise(() => {}); // nothing more comes
-      return json({ mine: true, now: new Date().toISOString(), seq: 7, totals: { requests: 1, rerouted: 0, errors: 0 }, routes: [route] });
+      return json({ mine: true, now: new Date().toISOString(), seq: sample.seq, totals: { requests: 1, rerouted: 0, errors: 0 }, routes: [sample] });
     }
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
     if (url.pathname === "/api/groups") return json({ models: [], groups: [], pools: [] });
@@ -77,5 +77,28 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(errors, []);
       });
     }
+
+    test(`${engine} ${lang}: weekly routing displays the weekly snapshot for both stage rows`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+      t.after(() => browser.close());
+      const page = await (await browser.newContext({ viewport: { width: 1100, height: 760 }, reducedMotion: "reduce" })).newPage();
+      const hour = 3_600_000, strategy = "weekly-balance/weekly-balance";
+      const sample = { ...route, order: accts.map((w, i) => ({
+        ...w, routing: strategy, used: i ? 62 : 63, usedWindow: "5 hours", usedRenews: iso(now + 2 * hour),
+        quotaWindows: [
+          { spanMs: 5 * hour, used: i ? 62 : 63, readAt: now - 10_000, resetsAt: now + 2 * hour },
+          { spanMs: 168 * hour, used: i ? 41 : 8, readAt: now - 10_000, resetsAt: now + 84 * hour },
+        ],
+      })) };
+      await page.route("**/*", serve(lang, true, sample));
+      await page.goto("http://magpie.test/?view=routing");
+      for (const [who, left] of [["work@example.com", 92], ["spare@example.com", 59]]) {
+        const stage = page.locator("li", { has: page.locator(".who", { hasText: who }) }).first();
+        const text = lang === "zh" ? `剩余 ${left}%` : `${left}% left`;
+        await stage.locator("em").filter({ hasText: text }).waitFor();
+        assert.ok(!(await stage.locator("em").textContent()).includes("5h"));
+        assert.equal(await stage.locator(".bar i").evaluate((i) => i.style.width), `${left}%`);
+      }
+    });
   }
 }
