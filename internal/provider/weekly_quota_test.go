@@ -18,7 +18,7 @@ func TestPrepareRemoteWeekSharesRefresh(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
 	var gets, posts atomic.Int32
-	var fresh atomic.Bool
+	var fresh, replaced atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == RemoteCardsPath:
@@ -35,11 +35,17 @@ func TestPrepareRemoteWeekSharesRefresh(t *testing.T) {
 			return
 		}
 		read := now.Add(-time.Hour)
+		used, renew := 20.0, reset
+		user := "original@example.invalid"
 		if fresh.Load() {
-			read = now
+			read = now.Add(-2 * time.Minute)
 		}
-		cards := ToldRouting([]SubscriptionQuota{{Provider: "claude", ReadAt: &read,
-			Windows: []QuotaWindow{{Name: "7 days", Span: 7 * 24 * time.Hour, Used: 20, ResetsAt: &reset}},
+		if replaced.Load() {
+			read, used, renew = now, 9, reset.Add(24*time.Hour)
+			user = "replacement@example.invalid"
+		}
+		cards := ToldRouting([]SubscriptionQuota{{Provider: "claude", User: user, ReadAt: &read,
+			Windows: []QuotaWindow{{Name: "7 days", Span: 7 * 24 * time.Hour, Used: used, ResetsAt: &renew}},
 		}})
 		json.NewEncoder(w).Encode(map[string]any{"data": cards})
 	}))
@@ -76,5 +82,16 @@ func TestPrepareRemoteWeekSharesRefresh(t *testing.T) {
 	}
 	if gets.Load() != 3 || posts.Load() != 1 {
 		t.Fatalf("GETs: %d, refreshes: %d, a fresh remote card must not ask the vendor", gets.Load(), posts.Load())
+	}
+	replaced.Store(true)
+	select {
+	case <-PrepareRemoteWeek(p, "claude/opus", time.Minute):
+	case <-time.After(5 * time.Second):
+		t.Fatal("the same remote did not supply the replacement account's quota")
+	}
+	a, inner, ok := RemoteAllowance(p, "claude/opus", false)
+	windows := a.QuotaWindows(inner)
+	if !ok || len(windows) != 1 || windows[0].Used != 9 || windows[0].ResetsAt != reset.Add(24*time.Hour).UnixMilli() {
+		t.Fatalf("replacement account windows: %+v", windows)
 	}
 }

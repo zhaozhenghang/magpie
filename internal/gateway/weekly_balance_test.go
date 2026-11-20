@@ -59,15 +59,17 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 	now := time.Now()
 	read := now.Add(-time.Minute)
 	shortReset := now.Add(time.Hour)
-	var limitB atomic.Bool
-	var staleB atomic.Bool
-	var refreshB atomic.Int32
-	addRemote := func(id string, used, short float64, until time.Duration, limited *atomic.Bool) {
+	type remoteState struct {
+		limited, stale atomic.Bool
+		refreshes      atomic.Int32
+	}
+	addRemote := func(id string, used, short float64, until time.Duration) *remoteState {
 		t.Helper()
+		state := &remoteState{}
 		reset := now.Add(until)
 		cards := func() []provider.SubscriptionQuota {
 			at := read
-			if id == "remote-b" && staleB.Load() {
+			if state.stale.Load() {
 				at = now.Add(-40 * time.Minute)
 			}
 			return provider.ToldRouting([]provider.SubscriptionQuota{{
@@ -84,16 +86,16 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			case "GET " + provider.RemoteCardsPath:
 				json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": cards()})
 			case "POST " + provider.RemoteRefreshPath:
-				if id != "remote-b" || r.URL.Query().Get("provider") != "claude" {
+				if r.URL.Query().Get("provider") != "claude" {
 					t.Errorf("unexpected quota refresh on %s", id)
 				}
-				refreshB.Add(1)
-				staleB.Store(false)
+				state.refreshes.Add(1)
+				state.stale.Store(false)
 				json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": cards()})
 			case "GET /v1/magpie/limit":
 				http.NotFound(w, r)
 			case "POST /v1/messages":
-				if limited != nil && limited.Load() {
+				if state.limited.Load() {
 					w.WriteHeader(http.StatusTooManyRequests)
 					io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"Your quota resets in 3 hours."}}`)
 					return
@@ -116,9 +118,10 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			Key: "test-key", Chat: server.URL + "/v1", Models: []string{model}}); err != nil {
 			t.Fatal(err)
 		}
+		return state
 	}
-	addRemote("remote-a", 50, 8, 36*time.Hour, nil)
-	addRemote("remote-b", 24, 68, 72*time.Hour, &limitB)
+	a := addRemote("remote-a", 50, 8, 36*time.Hour)
+	b := addRemote("remote-b", 24, 68, 72*time.Hour)
 	provider.RemoteCards(context.Background())
 	for _, id := range []string{"remote-a", "remote-b"} {
 		p, err := provider.Find(id)
@@ -130,8 +133,9 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			t.Fatalf("no dated %s allowance for %s: %v", id, inner, a.QuotaWindows(inner))
 		}
 	}
-	if err := provider.SaveGroup(provider.Group{Name: "Weekly", Routing: strategy,
-		Affinity: provider.AffinityTurn, Members: []string{"remote-a/" + model, "remote-b/" + model}}); err != nil {
+	group := provider.Group{Name: "Weekly", Routing: strategy,
+		Affinity: provider.AffinityTurn, Members: []string{"remote-a/" + model, "remote-b/" + model}}
+	if err := provider.SaveGroup(group); err != nil {
 		t.Fatal(err)
 	}
 	s := New()
@@ -192,15 +196,60 @@ func TestWeeklyBalancePluginOnRemoteGroup(t *testing.T) {
 			}
 		})
 	}
-	staleB.Store(true)
+	b.stale.Store(true)
 	provider.ForgetRemoteCardsForTest()
 	provider.RemoteCards(context.Background())
 	ask(t, "refresh stale seat", first, "remote-b")
-	if n := refreshB.Load(); n != 1 {
+	if n := b.refreshes.Load(); n != 1 {
 		t.Fatalf("got %d active quota refreshes, want one", n)
 	}
-	limitB.Store(true)
-	ask(t, "second", first, "remote-a")
+	c := addRemote("added-peer", 10, 82, 60*time.Hour)
+	c.stale.Store(true)
+	group.Members = append(group.Members, "added-peer/"+model)
+	if err := provider.SaveGroup(group); err != nil {
+		t.Fatal(err)
+	}
+	ask(t, "third member", first, "added-peer")
+	if n := c.refreshes.Load(); n != 1 || a.refreshes.Load() != 0 || b.refreshes.Load() != 1 {
+		t.Fatalf("refresh counts after adding a stale third member: %d, %d, %d", a.refreshes.Load(), b.refreshes.Load(), n)
+	}
+	if order := lastRoute(s).Order; len(order) != 3 || order[0].Provider != "added-peer" {
+		t.Fatalf("unexpected order with a third member: %+v", order)
+	}
+	t.Run("three accounts under one provider", func(t *testing.T) {
+		const alias = "claude-local"
+		pool := provider.Provider{ID: alias, Routing: strategy}
+		known := map[string]provider.Allowance{}
+		var candidates []candidate
+		for _, id := range []string{"remote-a", "remote-b", "added-peer"} {
+			peer, err := provider.Find(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, _, ok := provider.RemoteAllowance(*peer, model, false)
+			if !ok {
+				t.Fatalf("no allowance for %s", id)
+			}
+			user := id + "@example.invalid"
+			known[user] = a
+			acct := pool
+			acct.Account = &provider.Account{Agent: "claude", User: user}
+			candidates = append(candidates, candidate{p: acct, rest: user, model: "claude-sonnet-5-5"})
+		}
+		old := allowances
+		allowances = func(string) map[string]provider.Allowance { return known }
+		t.Cleanup(func() { allowances = old })
+		ordered, _ := weighRouted(pool, candidates, "claude-sonnet-5-5", provider.Anthropic)
+		if len(ordered) != 3 || ordered[0].p.Account.User != "added-peer@example.invalid" {
+			t.Fatalf("unexpected local account order: %+v", ordered)
+		}
+	})
+	group.Members = group.Members[:2]
+	if err := provider.SaveGroup(group); err != nil {
+		t.Fatal(err)
+	}
+	b.limited.Store(true)
+	ask(t, "member removed and remaining member limited", first, "remote-a")
 	if state := middleware.States()[src]; state.Orders < 2 || state.Failures != 0 {
 		t.Fatalf("strategy state = %+v", state)
 	}
